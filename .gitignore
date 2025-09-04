@@ -144,6 +144,8 @@ celerybeat.pid
 # env.bak/
 # venv.bak/
 
+monitor/settings.toml
+
 # Spyder project settings
 .spyderproject
 .spyproject
