@@ -1,0 +1,15 @@
+# Core scraping
+selenium==4.23.1
+webdriver-manager==4.0.2
+
+# Data handling
+pandas==2.2.2
+openpyxl==3.1.5   # Excel support for pandas
+
+# Notifications
+requests==2.32.3  # often handy; not strictly required for notify.py
+tomli==2.0.1      # only needed for Python < 3.11 (tomllib is stdlib in 3.11+)
+
+# Logging / pretty output (optional but nice)
+tabulate==0.9.0
+rich==13.9.2
