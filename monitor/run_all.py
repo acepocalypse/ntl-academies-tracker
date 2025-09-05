@@ -55,9 +55,18 @@ DEFAULT_IGNORE_FIELDS = ["location"]  # tweak as needed
 # Helpers
 # ----------------------------
 def read_settings() -> dict:
+    """Load settings.toml if it exists, else return defaults."""
     cfg_path = ROOT / "monitor" / "settings.toml"
+    if not cfg_path.exists():
+        logging.warning("settings.toml not found; using default settings.")
+        return {
+            "general": {"awards": list(AWARD_MODULES.keys())},
+            "diff": {"ignore_fields": DEFAULT_IGNORE_FIELDS},
+            "notify": {"method": "none"},  # disables notifications
+        }
     with cfg_path.open("rb") as f:
         return tomllib.load(f)
+
 
 
 def run_scraper(module_name: str) -> int:
