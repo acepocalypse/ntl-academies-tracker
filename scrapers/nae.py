@@ -5,7 +5,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import pandas as pd
 from selenium import webdriver
@@ -33,6 +33,29 @@ def new_driver(headless: bool = False) -> webdriver.Chrome:
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--no-sandbox")
+    # Suppress Chrome warnings and logs
+    opts.add_argument("--disable-logging")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-background-timer-throttling")
+    opts.add_argument("--disable-backgrounding-occluded-windows")
+    opts.add_argument("--disable-renderer-backgrounding")
+    opts.add_argument("--log-level=3")  # Suppress INFO, WARNING, ERROR messages
+    opts.add_argument("--silent")
+    # Disable Google API services to prevent registration errors
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-default-apps")
+    
+    # Reduce bandwidth/paint: disable images (safe for our text scraping)
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.default_content_setting_values.notifications": 2
+    }
+    opts.add_experimental_option("prefs", prefs)
+    # Suppress Chrome logging
+    opts.add_experimental_option('excludeSwitches', ['enable-logging'])
+    opts.add_experimental_option('useAutomationExtension', False)
+    
     # return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
     return webdriver.Chrome(options=opts)
 
@@ -117,16 +140,13 @@ def discover_years(driver: webdriver.Chrome, wait: WebDriverWait) -> List[int]:
     this_year = date.today().year
     return list(range(this_year - 60, this_year + 1))
 
-def collect_links_for_year(driver: webdriver.Chrome, wait: WebDriverWait, year: int) -> List[str]:
+def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDriverWait) -> List[str]:
     """
-    For a given election year, iterate all pages and return all profile links.
+    Collect all profile links from the current listing (no assumptions about filters),
+    iterating pagination until exhausted.
     """
-    url = f"{BASE_URL}?qey={year}&qdec=both"
-    driver.get(url)
-    set_page_size(driver, wait)
-
     links: List[str] = []
-    seen = set()
+    seen: Set[str] = set()
 
     while True:
         # Wait for any result items
@@ -176,7 +196,24 @@ def collect_links_for_year(driver: webdriver.Chrome, wait: WebDriverWait, year: 
 
     return links
 
-def scrape_profile(driver: webdriver.Chrome, wait: WebDriverWait, url: str, fallback_year: int) -> Dict[str, str]:
+def collect_all_links(driver: webdriver.Chrome, wait: WebDriverWait) -> List[str]:
+    """
+    Collect all profile links across the full directory in a single pass (no year filter).
+    """
+    driver.get(f"{BASE_URL}?qdec=both")
+    set_page_size(driver, wait)
+    return _collect_links_from_current_listing(driver, wait)
+
+def collect_links_for_year(driver: webdriver.Chrome, wait: WebDriverWait, year: int) -> List[str]:
+    """
+    For a given election year, iterate all pages and return all profile links.
+    """
+    url = f"{BASE_URL}?qey={year}&qdec=both"
+    driver.get(url)
+    set_page_size(driver, wait)
+    return _collect_links_from_current_listing(driver, wait)
+
+def scrape_profile(driver: webdriver.Chrome, wait: WebDriverWait, url: str, fallback_year: Optional[int] = None) -> Dict[str, str]:
     driver.get(url)
     wait.until(EC.presence_of_element_located((By.CLASS_NAME, "name")))
 
@@ -207,7 +244,7 @@ def scrape_profile(driver: webdriver.Chrome, wait: WebDriverWait, url: str, fall
         "(//ul[contains(@class,'ordList')])[last()]/"
         "li[label[normalize-space()='Election Year']]/span",
         attr="text"
-    ) or str(fallback_year)
+    ) or (str(fallback_year) if fallback_year is not None else "")
 
     # Deceased badge
     deceased = "Y"
@@ -233,18 +270,30 @@ def scrape_profile(driver: webdriver.Chrome, wait: WebDriverWait, url: str, fall
 
 def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> pd.DataFrame:
     """
-    Scrape ALL years & ALL profiles from NAE directory.
-    - Auto-discovers years if not provided.
-    - Saves timestamped snapshot to snapshots/3008/YYYYMMDD_HHMMSS.csv
-    - Also writes legacy CSV to `filepath + "3008.csv"` if `filepath` exists at runtime.
+    Scrape NAE directory efficiently.
+    - Default: collect all profile links once (no year filter) and scrape each profile once.
+    - If `all_years` provided: collect links per year but de-duplicate across years, then scrape once per profile.
+    - Saves timestamped snapshot to snapshots/3008/YYYYMMDD_HHMMSS.csv and optional legacy CSV to `filepath + "3008.csv"`.
     """
     driver = new_driver(headless=headless)
     wait = WebDriverWait(driver, WAIT_SEC)
     records: List[Dict[str, str]] = []
+    errors_count = 0
 
     try:
-        years = all_years or discover_years(driver, wait)
-        print(f"Discovered years: {years}")
+        # Build a unique set of links to avoid scraping duplicates across years.
+        unique_links: List[str] = []
+        seen_links: Set[str] = set()
+        fallback_year_for: Dict[str, int] = {}
+
+        years = all_years or []
+        if years:
+            print(f"Years provided ({len(years)}): {years}")
+        else:
+            print(f"[{AID}] Collecting all profile links (single pass)...")
+            unique_links = collect_all_links(driver, wait)
+            seen_links = set(unique_links)
+            print(f"[{AID}] Collected {len(unique_links)} unique links total")
 
         for yr in years:
             print(f"[{AID}] Collecting links for year {yr} …")
@@ -252,13 +301,34 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
             print(f"[{AID}] Year {yr}: {len(links)} profile links")
 
             for href in links:
-                try:
-                    rec = scrape_profile(driver, wait, href, yr)
-                    records.append(rec)
-                    time.sleep(PAGE_PAUSE)
-                except Exception as e:
-                    print(f"  - Error scraping profile {href}: {e}")
-                    continue
+                if href not in seen_links:
+                    seen_links.add(href)
+                    unique_links.append(href)
+                    fallback_year_for[href] = yr
+        
+        # After collecting links (either from years or single pass), scrape once per unique URL
+        total_links = len(unique_links)
+        print(f"[{AID}] Starting to scrape {total_links} unique profiles...")
+        
+        for i, href in enumerate(unique_links, 1):
+            try:
+                rec = scrape_profile(
+                    driver, wait, href, fallback_year=fallback_year_for.get(href)
+                )
+                records.append(rec)
+                time.sleep(PAGE_PAUSE)  # polite, consistent pacing
+                
+                # Progress reporting every 25 profiles
+                if i % 25 == 0:
+                    print(f"[{AID}] Scraped {i}/{total_links} profiles... ({len(records)} successful)")
+            except Exception as e:
+                errors_count += 1
+                print(f"  - Error scraping profile {i}/{total_links} ({href}): {e}")
+                continue
+
+        # Final summary
+        print(f"[{AID}] Scraping complete: {len(records)} successful, {errors_count} errors")
+
     finally:
         driver.quit()
 
