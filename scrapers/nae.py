@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime
+import random  # SPEED: jittered pacing to stay polite but fast
+from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -17,19 +18,24 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 # If you use webdriver_manager, uncomment the next line and the call in new_driver()
 # from webdriver_manager.chrome import ChromeDriverManager
 
-AID       = "3008"
-AWARD     = "NAE Membership"
-GOVID     = "221"
-GOVNAME   = "National Academy of Engineering"
-BASE_URL  = "https://www.nae.edu/20412/MemberDirectory"
-WAIT_SEC  = 10
-PAGE_PAUSE= 0.8
-PAGE_SIZE = "50"   # try to show max rows per page
+AID        = "3008"
+AWARD      = "NAE Membership"
+GOVID      = "221"
+GOVNAME    = "National Academy of Engineering"
+BASE_URL   = "https://www.nae.edu/20412/MemberDirectory"
+WAIT_SEC   = 10            # keep defined, but we’ll use shorter waits after first load
+PAGE_PAUSE = 0.2           # SPEED: reduced from 0.8s
+JITTER_MAX = 0.15          # SPEED: adds 0–0.15s jitter to each profile delay
+PAGE_SIZE  = "100"         # SPEED: try to show max rows per page (falls back if not present)
 
 def new_driver(headless: bool = False) -> webdriver.Chrome:
     opts = webdriver.ChromeOptions()
     if headless:
         opts.add_argument("--headless=new")
+
+    # SPEED: return control right after DOMContentLoaded (HTML is ready; we scrape text/attrs)
+    opts.page_load_strategy = "eager"
+
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--no-sandbox")
@@ -45,7 +51,7 @@ def new_driver(headless: bool = False) -> webdriver.Chrome:
     opts.add_argument("--disable-sync")
     opts.add_argument("--disable-background-networking")
     opts.add_argument("--disable-default-apps")
-    
+
     # Reduce bandwidth/paint: disable images (safe for our text scraping)
     prefs = {
         "profile.managed_default_content_settings.images": 2,
@@ -55,9 +61,13 @@ def new_driver(headless: bool = False) -> webdriver.Chrome:
     # Suppress Chrome logging
     opts.add_experimental_option('excludeSwitches', ['enable-logging'])
     opts.add_experimental_option('useAutomationExtension', False)
-    
+
     # return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
-    return webdriver.Chrome(options=opts)
+    drv = webdriver.Chrome(options=opts)
+
+    # SPEED: tiny implicit wait to reduce repeated polling overhead without masking bugs
+    drv.implicitly_wait(0.25)
+    return drv
 
 def norm_text(s: Optional[str]) -> str:
     if not s:
@@ -98,9 +108,7 @@ def set_page_size(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
         )))
         Select(dropdown).select_by_visible_text(PAGE_SIZE)
         wait.until(EC.presence_of_element_located((By.CLASS_NAME, "flexible-list-item")))
-    except TimeoutException:
-        pass
-    except NoSuchElementException:
+    except (TimeoutException, NoSuchElementException):
         pass
 
 def discover_years(driver: webdriver.Chrome, wait: WebDriverWait) -> List[int]:
@@ -109,10 +117,10 @@ def discover_years(driver: webdriver.Chrome, wait: WebDriverWait) -> List[int]:
     Falls back to a conservative range if the control can't be found.
     """
     driver.get(BASE_URL)
-    time.sleep(2)
+    # SPEED: a single generous wait on the first visit only
+    WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
     years: List[int] = []
 
-    # Common patterns: select elements with id/name containing 'Year'
     selectors = [
         (By.CSS_SELECTOR, "select[id*='Year']"),
         (By.CSS_SELECTOR, "select[name*='Year']"),
@@ -130,13 +138,10 @@ def discover_years(driver: webdriver.Chrome, wait: WebDriverWait) -> List[int]:
             if years:
                 years = sorted(set(years))
                 return years
-        except TimeoutException:
-            continue
-        except NoSuchElementException:
+        except (TimeoutException, NoSuchElementException):
             continue
 
     # Fallback (broad but finite): last 60 years
-    from datetime import date
     this_year = date.today().year
     return list(range(this_year - 60, this_year + 1))
 
@@ -149,10 +154,10 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
     seen: Set[str] = set()
 
     while True:
-        # Wait for any result items
+        # Short wait for items; pages are server-rendered
         wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "flexible-list-item")))
 
-        # Try to capture a sentinel (first card's href) to detect page change
+        # Capture sentinel to detect page change
         try:
             first_href_before = driver.find_element(By.CSS_SELECTOR, "span.name a").get_attribute("href")
         except NoSuchElementException:
@@ -178,11 +183,13 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
         driver.execute_script("arguments[0].scrollIntoView(true); window.scrollBy(0, -100);", btn)
         driver.execute_script("arguments[0].click();", btn)
 
-        # Wait until first card href changes (or short pause fallback)
+        # SPEED: shorter change-wait with tiny fallback, avoids long spins
         try:
-            wait.until(lambda d: d.find_element(By.CSS_SELECTOR, "span.name a").get_attribute("href") != first_href_before)
+            WebDriverWait(driver, 2).until(
+                lambda d: d.find_element(By.CSS_SELECTOR, "span.name a").get_attribute("href") != first_href_before
+            )
         except TimeoutException:
-            time.sleep(1)
+            time.sleep(0.3)
 
         # If nothing changed, bail to avoid infinite loop
         try:
@@ -192,7 +199,7 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
         except NoSuchElementException:
             break
 
-        time.sleep(PAGE_PAUSE)
+        time.sleep(0.15)  # small, steady pacing for the listing
 
     return links
 
@@ -201,6 +208,8 @@ def collect_all_links(driver: webdriver.Chrome, wait: WebDriverWait) -> List[str
     Collect all profile links across the full directory in a single pass (no year filter).
     """
     driver.get(f"{BASE_URL}?qdec=both")
+    # SPEED: one generous wait on the first listing load
+    WebDriverWait(driver, 8).until(EC.presence_of_all_elements_located((By.CLASS_NAME, "flexible-list-item")))
     set_page_size(driver, wait)
     return _collect_links_from_current_listing(driver, wait)
 
@@ -210,17 +219,20 @@ def collect_links_for_year(driver: webdriver.Chrome, wait: WebDriverWait, year: 
     """
     url = f"{BASE_URL}?qey={year}&qdec=both"
     driver.get(url)
+    # SPEED: one generous wait on the first listing load per year
+    WebDriverWait(driver, 8).until(EC.presence_of_all_elements_located((By.CLASS_NAME, "flexible-list-item")))
     set_page_size(driver, wait)
     return _collect_links_from_current_listing(driver, wait)
 
 def scrape_profile(driver: webdriver.Chrome, wait: WebDriverWait, url: str, fallback_year: Optional[int] = None) -> Dict[str, str]:
     driver.get(url)
+    # Gate on the element we actually need
     wait.until(EC.presence_of_element_located((By.CLASS_NAME, "name")))
 
-    raw_name   = safe_attr(driver, By.CSS_SELECTOR, "div.name", attr="text")
-    name       = clean_name(raw_name)
-    title      = safe_attr(driver, By.CSS_SELECTOR, ".personInfo.hidden-xs .jobOrg .jobTitle", attr="text")
-    affiliation= safe_attr(driver, By.CSS_SELECTOR, ".personInfo.hidden-xs .jobOrg .organization", attr="text")
+    raw_name    = safe_attr(driver, By.CSS_SELECTOR, "div.name", attr="text")
+    name        = clean_name(raw_name)
+    title       = safe_attr(driver, By.CSS_SELECTOR, ".personInfo.hidden-xs .jobOrg .jobTitle", attr="text")
+    affiliation = safe_attr(driver, By.CSS_SELECTOR, ".personInfo.hidden-xs .jobOrg .organization", attr="text")
 
     other_affs = ", ".join(
         norm_text(el.text)
@@ -229,16 +241,12 @@ def scrape_profile(driver: webdriver.Chrome, wait: WebDriverWait, url: str, fall
         ) if norm_text(el.text)
     )
 
-    location   = safe_attr(
+    location = safe_attr(
         driver, By.XPATH,
         "//label[normalize-space()='Location']/following-sibling::div[contains(@class,'address')]"
     )
 
-    # Election year (try to read; fallback to the listing year)
-    try:
-        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "ul.ordList li")))
-    except TimeoutException:
-        pass
+    # SPEED: removed extra wait for ul.ordList; we’re already gated on .name above
     election_year = safe_attr(
         driver, By.XPATH,
         "(//ul[contains(@class,'ordList')])[last()]/"
@@ -276,7 +284,10 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
     - Saves timestamped snapshot to snapshots/3008/YYYYMMDD_HHMMSS.csv and optional legacy CSV to `filepath + "3008.csv"`.
     """
     driver = new_driver(headless=headless)
-    wait = WebDriverWait(driver, WAIT_SEC)
+
+    # SPEED: use a shorter default wait for most interactions
+    wait_short = WebDriverWait(driver, 3)
+
     records: List[Dict[str, str]] = []
     errors_count = 0
 
@@ -291,13 +302,13 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
             print(f"Years provided ({len(years)}): {years}")
         else:
             print(f"[{AID}] Collecting all profile links (single pass)...")
-            unique_links = collect_all_links(driver, wait)
+            unique_links = collect_all_links(driver, wait_short)
             seen_links = set(unique_links)
             print(f"[{AID}] Collected {len(unique_links)} unique links total")
 
         for yr in years:
             print(f"[{AID}] Collecting links for year {yr} …")
-            links = collect_links_for_year(driver, wait, yr)
+            links = collect_links_for_year(driver, wait_short, yr)
             print(f"[{AID}] Year {yr}: {len(links)} profile links")
 
             for href in links:
@@ -305,19 +316,21 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
                     seen_links.add(href)
                     unique_links.append(href)
                     fallback_year_for[href] = yr
-        
+
         # After collecting links (either from years or single pass), scrape once per unique URL
         total_links = len(unique_links)
         print(f"[{AID}] Starting to scrape {total_links} unique profiles...")
-        
+
         for i, href in enumerate(unique_links, 1):
             try:
                 rec = scrape_profile(
-                    driver, wait, href, fallback_year=fallback_year_for.get(href)
+                    driver, wait_short, href, fallback_year=fallback_year_for.get(href)
                 )
                 records.append(rec)
-                time.sleep(PAGE_PAUSE)  # polite, consistent pacing
-                
+
+                # SPEED: fast, jittered pacing to remain polite
+                time.sleep(PAGE_PAUSE + random.random() * JITTER_MAX)
+
                 # Progress reporting every 25 profiles
                 if i % 25 == 0:
                     print(f"[{AID}] Scraped {i}/{total_links} profiles... ({len(records)} successful)")
@@ -338,7 +351,7 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
         df = df.sort_values(["profile_url", "name"]).drop_duplicates(subset=["profile_url"], keep="first")
 
     # Persist: timestamped snapshot
-    snap_dir = Path("snapshots") / AID
+    snap_dir = Path("../snapshots") / AID
     snap_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     snap_path = snap_dir / f"{stamp}.csv"
