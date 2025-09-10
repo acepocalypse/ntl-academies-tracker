@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import re
 import time
+import json
+import hashlib
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import pandas as pd
 from selenium import webdriver
@@ -28,6 +31,8 @@ BASE_URL   = (
 )
 WAIT_SEC   = 15
 PAGE_PAUSE = 2.0
+MAX_WORKERS = 5  # Number of parallel scrapers
+CACHE_DIR = Path("cache") / AID  # Directory for caching profile data
 
 # ----------------------------
 # Helpers
@@ -46,6 +51,14 @@ def new_driver(headless: bool = True) -> webdriver.Chrome:
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
     )
+    # Add options to disable background sync and timer throttling to avoid GCM errors
+    opts.add_argument("--disable-background-sync")
+    opts.add_argument("--disable-background-timer-throttling")
+    opts.add_argument("--disable-backgrounding-occluded-windows")
+    opts.add_argument("--disable-renderer-backgrounding")
+    # Suppress browser logging to avoid page load metrics errors
+    opts.add_argument("--log-level=3")
+    opts.add_argument("--disable-logging")
     return webdriver.Chrome(options=opts)
 
 def norm_text(s: Optional[str]) -> str:
@@ -77,9 +90,134 @@ def clean_key(text: str) -> Optional[str]:
     text = re.sub(r"[^\w_]+$", "", text)
     return text or None
 
+# Cache helpers
+def get_cache_path() -> Path:
+    """Create and return cache directory path."""
+    cache_dir = CACHE_DIR
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+def get_cache_key(url: str) -> str:
+    """Generate a safe filename from URL."""
+    return hashlib.md5(url.encode()).hexdigest() + ".json"
+
+def get_from_cache(url: str) -> Optional[Dict[str, str]]:
+    """Get profile data from cache if available."""
+    cache_path = get_cache_path() / get_cache_key(url)
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+    return None
+
+def save_to_cache(url: str, data: Dict[str, str]) -> None:
+    """Save profile data to cache."""
+    cache_path = get_cache_path() / get_cache_key(url)
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except IOError:
+        pass  # Continue even if cache write fails
+
 # ----------------------------
 # Core scraper
 # ----------------------------
+def scrape_profile(link: str) -> Dict[str, str]:
+    """Scrape a single member profile."""
+    # Check cache first
+    cached_data = get_from_cache(link)
+    if cached_data:
+        print(f"Using cached data for: {link}")
+        return cached_data
+
+    # Create a new driver for each thread to avoid concurrency issues
+    driver = new_driver(headless=True)
+    try:
+        driver.set_page_load_timeout(30)
+        
+        member: Dict[str, str] = {
+            "id": AID,
+            "govid": GOVID,
+            "govname": GOVNAME,
+            "award": AWARD,
+            "year": "",
+            "name": "",
+            "affiliation": "",
+            "deceased": "",
+            "profile_url": link,  # PRIMARY KEY
+        }
+
+        driver.get(link)
+
+        # Name - reduce wait time from 5 to 3 seconds
+        try:
+            name_el = WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located((By.XPATH, "//span[@class='fl-heading-text']"))
+            )
+            member["name"] = clean_name(name_el.text)
+        except (NoSuchElementException, TimeoutException):
+            member["name"] = ""
+
+        # Affiliation - optimize with faster lookups
+        try:
+            # Try direct CSS selector first - faster than XPath
+            aff_div = driver.find_element(By.CSS_SELECTOR, "div[data-node='jd7ypfvaiw1h']")
+            paragraphs = aff_div.find_elements(By.TAG_NAME, "p")
+            aff_text = "\n".join([norm_text(p.text) for p in paragraphs if norm_text(p.text)])
+            member["affiliation"] = aff_text
+        except NoSuchElementException:
+            member["affiliation"] = ""
+
+        # Dynamic meta items - optimize with faster CSS selectors
+        try:
+            meta_items = driver.find_elements(By.CSS_SELECTOR, "div.meta-item")
+            for item in meta_items:
+                try:
+                    p_elems = item.find_elements(By.CSS_SELECTOR, "div.fl-rich-text p")
+                    if len(p_elems) >= 2:
+                        label_html = (p_elems[0].get_attribute("innerHTML") or "").strip()
+                        value = norm_text(p_elems[1].text)
+                        key = clean_key(label_html)
+                        if key and value is not None:
+                            if key == "election_year":
+                                member["year"] = value
+                            elif key == "birth___deceased_date":
+                                parts = value.split("-")
+                                if len(parts) > 1 and norm_text(parts[1]):
+                                    member["deceased"] = "Y"
+                            else:
+                                # Write dynamic fields if they don't collide
+                                if key not in member:
+                                    member[key] = value
+                                else:
+                                    member[f"dynamic_{key}"] = value
+                except Exception:
+                    continue
+        except NoSuchElementException:
+            pass
+
+        if member.get("deceased") != "Y":
+            member["deceased"] = ""
+
+        # Normalize fields
+        for k in list(member.keys()):
+            member[k] = clean_name(member[k]) if k == "name" else norm_text(member[k])
+
+        # Cache successful results
+        save_to_cache(link, member)
+        return member
+
+    except TimeoutException:
+        print(f"Timed out loading profile page: {link}")
+        return {"profile_url": link, "error": "timeout"}
+    except Exception as e:
+        print(f"Error processing profile {link}: {e}")
+        return {"profile_url": link, "error": str(e)}
+    finally:
+        driver.quit()
+
 def scrape_nas() -> pd.DataFrame:
     """
     Scrape NAS directory into a normalized DataFrame with a stable primary key (profile_url).
@@ -87,8 +225,8 @@ def scrape_nas() -> pd.DataFrame:
     """
     driver = new_driver(headless=True)
     driver.implicitly_wait(5)
-
-    # --- Get initial page ---
+    
+    # --- Link collection ---
     try:
         driver.get(BASE_URL)
         WebDriverWait(driver, WAIT_SEC).until(
@@ -147,93 +285,44 @@ def scrape_nas() -> pd.DataFrame:
 
     print(f"\nCompleted link extraction. Total unique links: {len(links)}")
 
-    # --- Detail extraction ---
+    # --- Detail extraction with multithreading ---
     db: List[Dict[str, str]] = []
-    print("Starting detail extraction...")
-    for i, link in enumerate(links, 1):
-        print(f"Member {i}/{len(links)}: {link}")
-        try:
-            driver.get(link)
+    processed_urls: Set[str] = set()
+    print(f"\nStarting detail extraction with {MAX_WORKERS} parallel workers...")
 
-            member: Dict[str, str] = {
-                "id": AID,
-                "govid": GOVID,
-                "govname": GOVNAME,
-                "award": AWARD,
-                "year": "",
-                "name": "",
-                "affiliation": "",
-                "deceased": "",
-                "profile_url": link,  # PRIMARY KEY
-            }
+    # Process links in smaller batches to avoid memory issues
+    batch_size = 100
+    total_links = len(links)
+    
+    for batch_start in range(0, total_links, batch_size):
+        batch_end = min(batch_start + batch_size, total_links)
+        batch = links[batch_start:batch_end]
+        print(f"Processing batch {batch_start//batch_size + 1}/{(total_links + batch_size - 1)//batch_size} ({batch_end}/{total_links} profiles)...")
+        
+        # Use thread pool for parallel processing
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # Submit all profiles in this batch to the thread pool
+            future_to_link = {executor.submit(scrape_profile, link): link for link in batch 
+                             if link not in processed_urls}
+            
+            # Process results as they complete
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_link)):
+                link = future_to_link[future]
+                processed_urls.add(link)
+                
+                try:
+                    member = future.result()
+                    if member and "error" not in member:
+                        db.append(member)
+                    
+                    # Print progress every 10 profiles
+                    if (i + 1) % 10 == 0 or i == len(future_to_link) - 1:
+                        print(f"  Processed {i + 1}/{len(future_to_link)} profiles in current batch")
+                except Exception as e:
+                    print(f"Exception processing {link}: {e}")
 
-            # Name
-            try:
-                name_el = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.XPATH, "//span[@class='fl-heading-text']"))
-                )
-                member["name"] = clean_name(name_el.text)
-            except (NoSuchElementException, TimeoutException):
-                member["name"] = ""
-
-            # Affiliation (NAS page uses fixed node id for the block; keep fallback)
-            try:
-                aff_div = driver.find_element(By.XPATH, "//div[@data-node='jd7ypfvaiw1h']")
-                paragraphs = aff_div.find_elements(By.TAG_NAME, "p")
-                aff_text = "\n".join([norm_text(p.text) for p in paragraphs if norm_text(p.text)])
-                member["affiliation"] = aff_text
-            except NoSuchElementException:
-                member["affiliation"] = ""
-
-            # Dynamic meta items
-            try:
-                meta_items = driver.find_elements(By.XPATH, "//div[contains(@class, 'meta-item')]")
-                for item in meta_items:
-                    try:
-                        p_elems = item.find_elements(By.XPATH, ".//div[contains(@class, 'fl-rich-text')]/p")
-                        if len(p_elems) >= 2:
-                            label_html = (p_elems[0].get_attribute("innerHTML") or "").strip()
-                            value = norm_text(p_elems[1].text)
-                            key = clean_key(label_html)
-                            if key and value is not None:
-                                if key == "election_year":
-                                    member["year"] = value
-                                elif key == "birth___deceased_date":
-                                    parts = value.split("-")
-                                    if len(parts) > 1 and norm_text(parts[1]):
-                                        member["deceased"] = "Y"
-                                else:
-                                    # Write dynamic fields if they don't collide
-                                    if key not in member:
-                                        member[key] = value
-                                    else:
-                                        member[f"dynamic_{key}"] = value
-                    except Exception:
-                        continue
-            except NoSuchElementException:
-                pass
-
-            if member.get("deceased") != "Y":
-                member["deceased"] = ""
-
-            # Normalize fields
-            for k in list(member.keys()):
-                member[k] = clean_name(member[k]) if k == "name" else norm_text(member[k])
-
-            db.append(member)
-            # Small polite pause if desired
-            # time.sleep(0.1)
-
-        except TimeoutException:
-            print(f"Timed out loading profile page: {link}. Skipping.")
-            continue
-        except Exception as e:
-            print(f"Error processing profile {link}: {e}. Skipping.")
-            continue
-
-    driver.quit()
-    print("\nBrowser closed.")
-
+    print("\nDetail extraction complete.")
+    
     # Build DataFrame
     if not db:
         print("No data scraped.")
