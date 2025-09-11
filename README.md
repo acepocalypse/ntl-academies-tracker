@@ -1,5 +1,5 @@
 # National Academy Tracker
-**Authors:** Ace Setiawan & Ana Farmus
+**Authors:** Ace Setiawan & Ana Farmus  
 **Date:** September 2025
 
 ## 📄 Overview
