@@ -13,6 +13,7 @@ It logs **additions**, **removals**, and **modifications** to each site in `.csv
 
 ## 📂 Directory Overview
 
+```text
 NTL-Academies-Tracker/
 ├─ .vscode/
 │ └─ settings.json
@@ -46,5 +47,6 @@ NTL-Academies-Tracker/
 ├─ .gitignore
 ├─ README.md
 └─ requirements.txt
+```
 
 
