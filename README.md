@@ -49,7 +49,7 @@ NTL-Academies-Tracker/
 └─ requirements.txt
 ```
 
-## Module Description
+## 🔩 Module Descriptions
 
 ### Monitor
 Contains workflow management files including email alert automation and scrape runners
