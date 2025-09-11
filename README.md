@@ -51,11 +51,11 @@ NTL-Academies-Tracker/
 
 ## 🔩 Module Descriptions
 
-### Monitor
+### Monitor  
 Contains workflow management files including email alert automation and scrape runners
 
 #### __init__.py
-- marks monitor directory as a package, allowing esier imports across the project
+- marks Monitor directory as a package, allowing esier imports across the project
 
 #### diff_utils.py
 - provides utilities to compare the newest and previous data snapshots
@@ -71,21 +71,16 @@ Contains workflow management files including email alert automation and scrape r
 - creates required folders, cofnigures logging, runs full pipeline including data scraping and snapshot comparison and report email
 - also captures successes and failures in timepstamped log files
 
-#### send_email.py - (Under Construction)
-- handles email sending notifications 
-- loads credentials from .env file
-- connects to outlook SMTP server to send formatted weekly change reports
-
 #### test_runner.py
 - lightweight diffing pipeline tester without running full scrapes
 - compares lates two snapshots of some specific award ID
 - computes and writes CSV diffs and logs summary to file and console
 
-### Scrapers
+### Scrapers  
 Contains all scrape scripts
 
 #### __init__.py
-- marks scraper directory as a package, allowing esier imports across the project
+- marks Scrapers directory as a package, allowing esier imports across the project
 
 #### nae.py
 - script for National Academy of Engineers website scrape
@@ -107,6 +102,9 @@ Contains all scrape scripts
 
 #### 3008
 - NAE CSV files
+
+### .gitignore
+- Hides sensitive information
 
 ### Requirements.txt
 - Lists all Python dependencies needed to run the project
