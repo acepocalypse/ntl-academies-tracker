@@ -66,11 +66,6 @@ Contains workflow management files including email alert automation and scrape r
 - provides notification utilities for weekly workflow
 - send plain-text email alerts through SMTP connection and can post simple messages to Discord channel using webhook
 
-#### orchestrator.py - (Under construction)
-- manages weekly workflow for the projecct
-- creates required folders, cofnigures logging, runs full pipeline including data scraping and snapshot comparison and report email
-- also captures successes and failures in timepstamped log files
-
 #### run_all.py
 - manages weekly workflow for the projecct
 - creates required folders, cofnigures logging, runs full pipeline including data scraping and snapshot comparison and report email
