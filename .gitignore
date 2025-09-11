@@ -209,3 +209,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Ignore sensitive environment files -  hides .env file in monitor that contains sensitive login information
+monitor/.env
