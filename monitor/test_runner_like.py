@@ -44,6 +44,9 @@ from monitor.diff_utils import (
 # Keep defaults in sync with run_all.py where relevant
 DEFAULT_IGNORE_FIELDS = ["location"]
 
+# Add DIFFS_DIR for separating diff CSVs from snapshots
+DIFFS_DIR = ROOT / "diffs"
+
 
 def configure_logging() -> None:
     log_dir = ROOT / "logs"
@@ -55,8 +58,7 @@ def configure_logging() -> None:
     )
 
 
-def summarize_diff_paths(curr_path: Path) -> str:
-    base = curr_path.with_suffix("")
+def summarize_diff_paths(base: Path) -> str:
     parts: List[str] = []
     for suffix in ("__added.csv", "__removed.csv", "__modified.csv"):
         p = base.with_name(base.name + suffix)
@@ -98,9 +100,14 @@ def process_award(award_id: str, ignore_fields: Iterable[str]) -> str:
 
     diff = compute_diff(prev, curr, ignore_fields=list(ignore_fields))
     summary = diff_summary_str(diff)
-    written = write_diff_csvs(diff, curr_path.with_suffix(""))
+    
+    # Create diffs directory for this award and write diff CSVs there
+    diff_dir = DIFFS_DIR / award_id
+    diff_dir.mkdir(parents=True, exist_ok=True)
+    diff_base = diff_dir / curr_path.name
+    written = write_diff_csvs(diff, diff_base.with_suffix(""))
     _ = written  # not used beyond summarizing
-    written_str = summarize_diff_paths(curr_path)
+    written_str = summarize_diff_paths(diff_base.with_suffix(""))
 
     msg = f"- {award_id}: {curr_path.name}  {summary}  {written_str}"
     logging.info(msg)
