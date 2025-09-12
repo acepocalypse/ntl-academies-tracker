@@ -26,7 +26,7 @@ from monitor.diff_utils import (
     write_diff_csvs,
     SNAPSHOTS_DIR,
 )
-from monitor.notify import email_notify, discord_notify
+from monitor.notify import email_notify
 
 # ----------------------------
 # Config
@@ -81,25 +81,20 @@ def run_scraper(module_name: str) -> int:
 
 
 def send_notification(settings: dict, title: str, body: str) -> None:
-    method = settings.get("notify", {}).get("method", "discord")
+    method = settings.get("notify", {}).get("method", "none")
     try:
-        if method == "discord":
-            url = settings.get("discord", {}).get("webhook_url", "")
-            if not url:
-                logging.warning("Discord webhook URL missing; skipping notification.")
-                return
-            discord_notify(url, f"**{title}**\n{body}")
-        elif method == "email":
+        if method == "email":
             e = settings.get("email", {})
+            to_addrs = e.get("to", [])
+            if isinstance(to_addrs, str):
+                to_addrs = [to_addrs]
             email_notify(
                 subject=title,
                 body=body,
-                smtp_host=e["smtp_host"],
-                smtp_port=int(e["smtp_port"]),
-                username=e["username"],
-                password=e["password"],
-                to_addrs=e["to"],
+                to_addrs=to_addrs,
             )
+        elif method == "none":
+            pass  # No notification
         else:
             logging.warning("Unknown notify method '%s'; skipping notification.", method)
     except Exception as ex:
@@ -110,7 +105,8 @@ def summarize_diff_paths(award_id: str, curr_path: Path) -> str:
     """
     Return a short string with links/paths to any diff CSVs written for this snapshot.
     """
-    base = curr_path.with_suffix("")
+    diff_dir = SNAPSHOTS_DIR / "diffs"
+    base = diff_dir / curr_path.name
     parts = []
     for suffix in ("__added.csv", "__removed.csv", "__modified.csv"):
         p = base.with_name(base.name + suffix)
@@ -142,14 +138,14 @@ def main() -> None:
             any_failures = True
             continue
 
-        # 1) Execute scraper
-        rc = run_scraper(module)
-        if rc != 0:
-            msg = f"• {aid}: scraper FAILED (rc={rc})"
-            logging.error(msg)
-            lines.append(msg)
-            any_failures = True
-            continue
+        # # 1) Execute scraper
+        # rc = run_scraper(module)
+        # if rc != 0:
+        #     msg = f"• {aid}: scraper FAILED (rc={rc})"
+        #     logging.error(msg)
+        #     lines.append(msg)
+        #     any_failures = True
+        #     continue
 
         # 2) Diff latest two snapshots
         prev, curr, prev_path, curr_path = load_latest_two(
@@ -173,7 +169,9 @@ def main() -> None:
         diff = compute_diff(prev, curr, ignore_fields=ignore_fields)
         summary = diff_summary_str(diff)
         # 3) Write diff CSVs (if non-empty)
-        written = write_diff_csvs(diff, curr_path.with_suffix(""))
+        diff_dir = SNAPSHOTS_DIR / "diffs"
+        diff_dir.mkdir(parents=True, exist_ok=True)
+        written = write_diff_csvs(diff, diff_dir / curr_path.name)
         written_str = summarize_diff_paths(aid, curr_path)
 
         msg = f"• {aid}: {curr_path.name}  {summary}  {written_str}"

@@ -2,33 +2,46 @@
 monitor/notify.py
 
 Central email notification utility for NTL-Academies-Tracker.
-Loads email credentials from a local .env file and sends
-plain-text status reports via Outlook SMTP.
+Loads Gmail API credentials and sends plain-text status reports via Gmail API.
 """
 import os
-import smtplib
-import urllib.request
-from email.message import EmailMessage
+import os.path
+import base64
+from email.mime.text import MIMEText
 from email.utils import formataddr
 from pathlib import Path
-from dotenv import load_dotenv
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-# === SMTP Configuration ===
-PORT = 587  # correct STARTTLS port for Outlook
-EMAIL_SERVER = "smtp-mail.outlook.com"
+# === Gmail API Configuration ===
+SCOPES = ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"]
+# Requires credentials.json (from Google Cloud Console) and token.json (generated on first run)
 
-# === Load credentials from .env ===
-# .env file should contain:
-#   EMAIL=ExternalAnalytics@purdue.edu
-#   PASSWORD=<app_password>
-current_dir = Path(__file__).resolve().parent if "__file__" in locals() else Path.cwd()
-load_dotenv(current_dir / ".env")
-
-SENDER_EMAIL = os.getenv("EMAIL")
-PASSWORD_EMAIL = os.getenv("PASSWORD")
-
-if not SENDER_EMAIL or not PASSWORD_EMAIL:
-    raise RuntimeError("❌ EMAIL or PASSWORD not found in .env file")
+def get_gmail_service():
+    """Get authenticated Gmail API service and user email."""
+    creds = None
+    current_dir = Path(__file__).resolve().parent if "__file__" in locals() else Path.cwd()
+    token_path = current_dir / "monitor\\token.json"
+    creds_path = current_dir / "monitor\\credentials.json"
+    
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(token_path, "w") as token:
+            token.write(creds.to_json())
+    
+    service = build("gmail", "v1", credentials=creds)
+    profile = service.users().getProfile(userId="me").execute()
+    user_email = profile["emailAddress"]
+    return service, user_email
 
 def email_notify(
     subject: str,
@@ -38,7 +51,7 @@ def email_notify(
 ) -> None:
     
     """
-    Send a plain-text email notification.
+    Send a plain-text email notification via Gmail API.
 
     Parameters
     ----------
@@ -51,21 +64,21 @@ def email_notify(
     name : str, optional
         Recipient name for greeting (default empty).
     """
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = formataddr(("Awards Monitor", SENDER_EMAIL))
-    msg["To"] = ", ".join(to_addrs)
-    msg["BCC"] = SENDER_EMAIL  # send a copy to self
     greeting = f"Hello {name},\n\n" if name else ""
-    msg.set_content(f"{greeting}{body}\n\nBest regards,\nAwards Monitor")
-
+    full_body = f"{greeting}{body}\n\nBest regards,\nAwards Monitor"
+    
     try:
-        with smtplib.SMTP(EMAIL_SERVER, PORT) as server:
-            server.starttls()  # secure connection
-            server.login(SENDER_EMAIL, PASSWORD_EMAIL)
-            server.send_message(msg)
-        print(f"✅ Email sent to {', '.join(to_addrs)}")
-    except Exception as e:
+        service, user_email = get_gmail_service()
+        msg = MIMEText(full_body)
+        msg['Subject'] = subject
+        msg['From'] = formataddr(("Awards Monitor", user_email))
+        msg['To'] = ", ".join(to_addrs)
+        msg['BCC'] = user_email  # send a copy to self
+        raw_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        message = {'raw': raw_msg}
+        sent_msg = service.users().messages().send(userId="me", body=message).execute()
+        print(f"✅ Email sent to {', '.join(to_addrs)} (Message ID: {sent_msg['id']})")
+    except HttpError as e:
         print(f"❌ Failed to send email to {', '.join(to_addrs)}: {e}")
 
 # Optional quick test
@@ -73,6 +86,7 @@ if __name__ == "__main__":
     email_notify(
         subject="Test Email from Awards Monitor",
         body=":3",
-        to_addrs=["your_test_address@purdue.edu"],
+        to_addrs=["mrakmalsetiawan@gmail.com", "afarmus@purdue.edu", "anafarmus@gmail.com"],
         name="Test Recipient",
     )
+
