@@ -6,7 +6,7 @@ import time
 import json
 import hashlib
 import concurrent.futures
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -102,9 +102,13 @@ def get_cache_key(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest() + ".json"
 
 def get_from_cache(url: str) -> Optional[Dict[str, str]]:
-    """Get profile data from cache if available."""
+    """Get profile data from cache if available and not older than 2 hours."""
     cache_path = get_cache_path() / get_cache_key(url)
     if cache_path.exists():
+        # Check file age
+        mtime = datetime.fromtimestamp(cache_path.stat().st_mtime)
+        if datetime.now() - mtime > timedelta(hours=2):
+            return None
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -129,7 +133,7 @@ def scrape_profile(link: str) -> Dict[str, str]:
     # Check cache first
     cached_data = get_from_cache(link)
     if cached_data:
-        print(f"Using cached data for: {link}")
+        print(f"[{AID}] Using cached data for: {link}")
         return cached_data
 
     # Create a new driver for each thread to avoid concurrency issues
@@ -210,10 +214,10 @@ def scrape_profile(link: str) -> Dict[str, str]:
         return member
 
     except TimeoutException:
-        print(f"Timed out loading profile page: {link}")
+        print(f"[{AID}] Timed out loading profile page: {link}")
         return {"profile_url": link, "error": "timeout"}
     except Exception as e:
-        print(f"Error processing profile {link}: {e}")
+        print(f"[{AID}] Error processing profile {link}: {e}")
         return {"profile_url": link, "error": str(e)}
     finally:
         driver.quit()
@@ -232,19 +236,19 @@ def scrape_nas() -> pd.DataFrame:
         WebDriverWait(driver, WAIT_SEC).until(
             EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
         )
-        print(f"Accessed: {BASE_URL}")
+        print(f"[{AID}] Accessed: {BASE_URL}")
     except Exception as e:
-        print(f"Error loading initial directory: {e}")
+        print(f"[{AID}] Error loading initial directory: {e}")
         driver.quit()
         return pd.DataFrame()
 
     # --- Link collection ---
     links: List[str] = []
     current_page = 1
-    print("Starting link collection...")
+    print(f"[{AID}] Starting link collection...")
 
     while True:
-        print(f"Processing directory page {current_page}...")
+        print(f"[{AID}] Processing directory page {current_page}...")
         try:
             member_cards = WebDriverWait(driver, WAIT_SEC).until(
                 EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
@@ -259,7 +263,7 @@ def scrape_nas() -> pd.DataFrame:
                         links_found_on_page += 1
                 except NoSuchElementException:
                     continue
-            print(f"  Found {links_found_on_page} new links on page {current_page}.")
+            print(f"[{AID}]   Found {links_found_on_page} new links on page {current_page}.")
 
             # Pagination
             try:
@@ -274,21 +278,21 @@ def scrape_nas() -> pd.DataFrame:
                 time.sleep(PAGE_PAUSE)
                 current_page += 1
             except (NoSuchElementException, TimeoutException):
-                print("No 'Next' button — reached last page.")
+                print(f"[{AID}] No 'Next' button — reached last page.")
                 break
         except TimeoutException:
-            print(f"Timed out waiting for member cards on page {current_page}. Stopping link collection.")
+            print(f"[{AID}] Timed out waiting for member cards on page {current_page}. Stopping link collection.")
             break
         except Exception as e:
-            print(f"Unexpected error on page {current_page}: {e}")
+            print(f"[{AID}] Unexpected error on page {current_page}: {e}")
             break
 
-    print(f"\nCompleted link extraction. Total unique links: {len(links)}")
+    print(f"\n[{AID}] Completed link extraction. Total unique links: {len(links)}")
 
     # --- Detail extraction with multithreading ---
     db: List[Dict[str, str]] = []
     processed_urls: Set[str] = set()
-    print(f"\nStarting detail extraction with {MAX_WORKERS} parallel workers...")
+    print(f"\n[{AID}] Starting detail extraction with {MAX_WORKERS} parallel workers...")
 
     # Process links in smaller batches to avoid memory issues
     batch_size = 100
@@ -297,7 +301,7 @@ def scrape_nas() -> pd.DataFrame:
     for batch_start in range(0, total_links, batch_size):
         batch_end = min(batch_start + batch_size, total_links)
         batch = links[batch_start:batch_end]
-        print(f"Processing batch {batch_start//batch_size + 1}/{(total_links + batch_size - 1)//batch_size} ({batch_end}/{total_links} profiles)...")
+        print(f"[{AID}] Processing batch {batch_start//batch_size + 1}/{(total_links + batch_size - 1)//batch_size} ({batch_end}/{total_links} profiles)...")
         
         # Use thread pool for parallel processing
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -317,15 +321,15 @@ def scrape_nas() -> pd.DataFrame:
                     
                     # Print progress every 10 profiles
                     if (i + 1) % 10 == 0 or i == len(future_to_link) - 1:
-                        print(f"  Processed {i + 1}/{len(future_to_link)} profiles in current batch")
+                        print(f"[{AID}]   Processed {i + 1}/{len(future_to_link)} profiles in current batch")
                 except Exception as e:
-                    print(f"Exception processing {link}: {e}")
+                    print(f"[{AID}] Exception processing {link}: {e}")
 
-    print("\nDetail extraction complete.")
+    print(f"\n[{AID}] Detail extraction complete.")
     
     # Build DataFrame
     if not db:
-        print("No data scraped.")
+        print(f"[{AID}] No data scraped.")
         return pd.DataFrame()
 
     df = pd.DataFrame(db, dtype=str).fillna("")
@@ -354,9 +358,9 @@ def scrape_nas() -> pd.DataFrame:
 
     if not df.empty:
         now = datetime.now().strftime("%H:%M:%S")
-        print(f"AwardID {AID} — scraped ({len(df)} rows) and saved snapshot {snap_path.name} at {now}")
+        print(f"[{AID}] AwardID {AID} — scraped ({len(df)} rows) and saved snapshot {snap_path.name} at {now}")
     else:
-        print(f"AwardID {AID} — no rows scraped; snapshot still written: {snap_path.name}")
+        print(f"[{AID}] AwardID {AID} — no rows scraped; snapshot still written: {snap_path.name}")
 
     return df
 

@@ -284,9 +284,9 @@ def scrape_nam() -> pd.DataFrame:
 
     if not df.empty:
         now = datetime.now().strftime("%H:%M:%S")
-        print(f"AwardID {AID} — scraped ({len(df)} rows) and saved snapshot {snap_path.name} at {now}")
+        print(f"[{AID}] AwardID {AID} — scraped ({len(df)} rows) and saved snapshot {snap_path.name} at {now}")
     else:
-        print(f"AwardID {AID} — no rows scraped; snapshot still written: {snap_path.name}")
+        print(f"[{AID}] AwardID {AID} — no rows scraped; snapshot still written: {snap_path.name}")
 
     return df
 
