@@ -28,6 +28,10 @@ from monitor.diff_utils import (
 )
 from monitor.notify import email_notify
 
+# Ensure SNAPSHOTS_DIR is a Path object
+if isinstance(SNAPSHOTS_DIR, str):
+    SNAPSHOTS_DIR = Path(SNAPSHOTS_DIR)
+
 # ----------------------------
 # Config
 # ----------------------------
@@ -46,6 +50,13 @@ AWARD_MODULES = {
     "1909": "scrapers.nam",  # NAM
     "2023": "scrapers.nas",  # NAS
     "3008": "scrapers.nae",  # NAE
+}
+
+# Map award_id -> human-friendly academy name
+AWARD_NAMES = {
+    "1909": "NAM",
+    "2023": "NAS",
+    "3008": "NAE",
 }
 
 DEFAULT_IGNORE_FIELDS = ["location"]  # tweak as needed
@@ -68,7 +79,6 @@ def read_settings() -> dict:
         return tomllib.load(f)
 
 
-
 def run_scraper(module_name: str) -> int:
     """
     Run a scraper module as: python -m <module_name>
@@ -80,7 +90,7 @@ def run_scraper(module_name: str) -> int:
     return rc
 
 
-def send_notification(settings: dict, title: str, body: str) -> None:
+def send_notification(settings: dict, title: str, body: str, attachments: list[str] = None) -> None:
     method = settings.get("notify", {}).get("method", "none")
     try:
         if method == "email":
@@ -92,6 +102,7 @@ def send_notification(settings: dict, title: str, body: str) -> None:
                 subject=title,
                 body=body,
                 to_addrs=to_addrs,
+                attachments=attachments or [],
             )
         elif method == "none":
             pass  # No notification
@@ -101,18 +112,19 @@ def send_notification(settings: dict, title: str, body: str) -> None:
         logging.exception("Notification failed: %s", ex)
 
 
-def summarize_diff_paths(award_id: str, curr_path: Path) -> str:
+def summarize_diff_paths(award_id: str, base_name: str) -> str:
     """
     Return a short string with links/paths to any diff CSVs written for this snapshot.
+    Each file is listed on its own line.
     """
     diff_dir = SNAPSHOTS_DIR / "diffs"
-    base = diff_dir / curr_path.name
     parts = []
-    for suffix in ("__added.csv", "__removed.csv", "__modified.csv"):
-        p = base.with_name(base.name + suffix)
+    for suffix in ("added", "removed", "modified"):
+        p = diff_dir / f"{award_id}__{base_name}__{suffix}.csv"
         if p.exists() and p.stat().st_size > 0:
             parts.append(p.name)
-    return ", ".join(parts) if parts else "(no diff files)"
+    # List each file on its own line, or show (no diff files)
+    return "\n".join(parts) if parts else "(no diff files)"
 
 
 # ----------------------------
@@ -126,26 +138,29 @@ def main() -> None:
     run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logging.info("=== Weekly run start: %s ===", run_ts)
 
-    lines: list[str] = [f"Run at {run_ts}"]
+    lines: list[str] = [f"Run at {run_ts}\n"]
+
     any_failures = False
+    all_diff_files: list[str] = []
 
     for aid in award_ids:
         module = AWARD_MODULES.get(aid)
+        academy_name = AWARD_NAMES.get(aid, aid)
         if not module:
-            msg = f"• {aid}: no scraper module mapping found"
+            msg = f"• {aid} ({academy_name}): no scraper module mapping found"
             logging.error(msg)
             lines.append(msg)
             any_failures = True
             continue
 
-        # # 1) Execute scraper
-        # rc = run_scraper(module)
-        # if rc != 0:
-        #     msg = f"• {aid}: scraper FAILED (rc={rc})"
-        #     logging.error(msg)
-        #     lines.append(msg)
-        #     any_failures = True
-        #     continue
+        # 1) Execute scraper
+        rc = run_scraper(module)
+        if rc != 0:
+            msg = f"• {aid}: scraper FAILED (rc={rc})"
+            logging.error(msg)
+            lines.append(msg)
+            any_failures = True
+            continue
 
         # 2) Diff latest two snapshots
         prev, curr, prev_path, curr_path = load_latest_two(
@@ -155,13 +170,20 @@ def main() -> None:
         )
 
         if curr_path is None:
-            msg = f"• {aid}: no snapshots found after run"
+            msg = f"• {aid} ({academy_name}): no snapshots found after run"
+            logging.warning(msg)
+            lines.append(msg)
+            continue
+
+        # Skip if curr_path is not a valid snapshot (e.g., is a diff file or log file)
+        if any(curr_path.name.endswith(suffix) for suffix in ("__removed.csv", "__added.csv", "__modified.csv", ".log")):
+            msg = f"• {aid} ({academy_name}): skipping non-snapshot file {curr_path.name}"
             logging.warning(msg)
             lines.append(msg)
             continue
 
         if prev_path is None:
-            msg = f"• {aid}: first snapshot {curr_path.name} (no diff yet)"
+            msg = f"• {aid} ({academy_name}): first snapshot {curr_path.name} (no diff yet)"
             logging.info(msg)
             lines.append(msg)
             continue
@@ -171,18 +193,49 @@ def main() -> None:
         # 3) Write diff CSVs (if non-empty)
         diff_dir = SNAPSHOTS_DIR / "diffs"
         diff_dir.mkdir(parents=True, exist_ok=True)
-        written = write_diff_csvs(diff, diff_dir / curr_path.name)
-        written_str = summarize_diff_paths(aid, curr_path)
 
-        msg = f"• {aid}: {curr_path.name}  {summary}  {written_str}"
+        # --- New: Use clean output file naming ---
+        # Extract timestamp from curr_path.name (assume format: YYYYMMDD_HHMMSS or similar)
+        # If not present, use current time
+        # Remove any extension from curr_path.name
+        base_name = curr_path.stem
+        # Try to extract timestamp from curr_path.name, fallback to now
+        # If curr_path.name is like 20250910_140441.csv, base_name is 20250910_140441
+        # If not, fallback to datetime.now()
+        try:
+            datetime.strptime(base_name[:15], "%Y%m%d_%H%M%S")
+            timestamp = base_name[:15]
+        except Exception:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = timestamp
+
+        diff_files = {}
+        for key in ("added", "removed", "modified"):
+            diff_files[key] = diff_dir / f"{aid}__{base_name}__{key}.csv"
+
+        written = write_diff_csvs(diff, diff_dir / f"{aid}__{base_name}")
+        written_str = summarize_diff_paths(aid, base_name)
+
+        # Collect diff file paths for attachments
+        for key in ("added", "removed", "modified"):
+            p = diff_files[key]
+            if p.exists() and p.stat().st_size > 0:
+                all_diff_files.append(str(p))
+
+        msg = f"• {aid} ({academy_name}): {base_name} — {summary}"
+        if written_str != "(no diff files)":
+            msg += "\n" + written_str
         logging.info(msg)
+        # Add a blank line before each award except the first
+        if len(lines) > 1:
+            lines.append("")
         lines.append(msg)
 
     # 4) Notification summary
-    title = "Awards monitor — weekly run complete"
+    title = "National Academies Membership Tracker — Weekly run complete"
     body = "\n".join(lines)
     logging.info(body)
-    send_notification(settings, title, body)
+    send_notification(settings, title, body, attachments=all_diff_files)
 
     # Also print to console for local runs
     print(body)
