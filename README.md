@@ -112,21 +112,18 @@ Contains all scrape scripts
 
 ## Steps for Deployment on New Windows Machine
 
-1. Ensure Python dependencies are installed (see requirements.txt). Pay special attention to where the Python file is stored, especially the Python.exe file it contains. 
+1. Ensure Python dependencies are installed (see requirements.txt). Pay special attention to where the Python software is stored, especially the Python.exe file it contains. 
 3. Clone repository on local device.
-2. Configure local repository to contain any .env files/other hidden files needed to contain email credentials.
+2. Configure local repository to contain any .env files/other hidden files needed to hold email credentials.
 4. Open Windows Start and search for Task Manager. Once opened, type Windows key + R. This should open the Run dialogue.
 5. In the Run dialogue, enter "taskschd.msc". This will open Task Scheduler.
 6. In Task Scheduler, locate "Create Basic Task" on the right hand menu. Next, add a relevant name and description.
 7. Click "Next," and select the desired interval of repetition. Then, choose the start date and time, and click "Next".
-8. Choose "Start a Program". Enter the path name to your Python.exe file under "Program/script." In the Arguments section underneath, type the path to the run_all.py file
-
-    Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"
-   
+8. Choose "Start a Program". Enter the path name to your Python.exe file under "Program/script." You can also try locating it in your folders by clicking "Browse". In the Arguments section underneath, type the path to the run_all.py file
+  Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"
 10. Click "Next" to review the task settings and click "Finish" if satisfied. 
 11. Check the task's properties by clicking on it from the Task Scheduler Library. Ensure the settings allow for execution regardless of whether the user is logged on. 
-10. The first time the program runs, Windows will likely prompt you to select the application to run the program from. For this reason, plan to be online at the task's first start time to ensure the program does not idle. 
-
+10. The first time the program runs, Windows will likely prompt you to select the application from which the program will run. For this reason, plan to be online at the task's first start time to ensure the program does not idle. 
 
 If you wish to edit, delete, disable, or review your new task, navigate to Task Scheduler using the above steps, find the left hand menu and select "Task Scheduler Library".
 You should be able to view the task. Click on it to view various settings tabs located underneath the task list, or right-click to view other actions, including Delete.
