@@ -122,8 +122,6 @@ Contains all scrape scripts
 8. Choose "Start a Program". Enter the path name to your Python.exe file under "Program/script." In the Arguments section underneath, type the path to the run_all.py file
 
     Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"
-
-    You can also select "Browse", select "Computer" fromn the left menu, from the folders that appear select "Users", select your username, navigate to the IDE folder you used to clone the repository (e.g., .vscode), select the project directory "ntl-academies-tracker", select "monitor", and finally select "run_all".
    
 10. Click "Next" to review the task settings and click "Finish" if satisfied. 
 11. Check the task's properties by clicking on it from the Task Scheduler Library. Ensure the settings allow for execution regardless of whether the user is logged on. 
