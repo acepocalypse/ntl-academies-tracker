@@ -6,8 +6,8 @@
 This program automates web-scrapes of the **National Academy of Engineering**, **Medicine**, and **Science** websites.  
 It logs **additions**, **removals**, and **modifications** to each site in `.csv` files.  
 
-- Runs **weekly** on a dedicated server or computer.  
-- Sends an **email alert** to the Purdue EDA team with links to the CSV reports showing changes.
+- Runs **weekly** on a dedicated computer.  
+- Sends an **email alert** to specified email with links to the CSV reports showing changes.
 
 ---
 
@@ -120,10 +120,13 @@ Contains all scrape scripts
 6. In Task Scheduler, locate "Create Basic Task" on the right hand menu. Next, add a relevant name and description.
 7. Click "Next," and select the desired interval of repetition. Then, choose the start date and time, and click "Next".
 8. Choose "Start a Program". Enter the path name to your Python.exe file under "Program/script." In the Arguments section underneath, type the path to the run_all.py file
-        Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"
-        You can also select "Browse", select "Computer" fromn the left menu, from the folders that appear select "Users", select your username, navigate to the IDE folder you used to clone the repository (e.g., .vscode), select the project directory "ntl-academies-tracker", select "monitor", and finally select "run_all". 
-9. Click "Next" to review the task settings and click "Finish" if satisfied. 
-10. Check the task's properties by clicking on it from the Task Scheduler Library. Ensure the settings allow for execution regardless of whether the user is logged on. 
+
+    Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"
+
+    You can also select "Browse", select "Computer" fromn the left menu, from the folders that appear select "Users", select your username, navigate to the IDE folder you used to clone the repository (e.g., .vscode), select the project directory "ntl-academies-tracker", select "monitor", and finally select "run_all".
+   
+10. Click "Next" to review the task settings and click "Finish" if satisfied. 
+11. Check the task's properties by clicking on it from the Task Scheduler Library. Ensure the settings allow for execution regardless of whether the user is logged on. 
 10. The first time the program runs, Windows will likely prompt you to select the application to run the program from. For this reason, plan to be online at the task's first start time to ensure the program does not idle. 
 
 
