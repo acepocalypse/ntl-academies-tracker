@@ -11,7 +11,7 @@ It logs **additions**, **removals**, and **modifications** to each site in `.csv
 
 ---
 
-## Directory Overview
+## Directory
 
 ```text
 NTL-Academies-Tracker/
