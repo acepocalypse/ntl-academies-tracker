@@ -119,9 +119,8 @@ Contains all scrape scripts
 5. In the Run dialogue, enter "taskschd.msc". This will open Task Scheduler.
 6. In Task Scheduler, locate "Create Basic Task" on the right hand menu. Next, add a relevant name and description.
 7. Click "Next," and select the desired interval of repetition. Then, choose the start date and time, and click "Next".
-8. Choose "Start a Program". Enter the path name to your Python.exe file under "Program/script." You can also try locating it in your folders by clicking "Browse". In the Arguments section underneath, type the path to the run_all.py file
-
-Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"
+8. Choose "Start a Program". Enter the path name to your Python.exe file under "Program/script." You can also try locating it in your folders by clicking "Browse". In the Arguments section underneath, type the path to the run_all.py file  
+Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"  
 9. Click "Next" to review the task settings and click "Finish" if satisfied. 
 10. Check the task's properties by clicking on it from the Task Scheduler Library. Ensure the settings allow for execution regardless of whether the user is logged on. 
 11. The first time the program runs, Windows will likely prompt you to select the application from which the program will run. For this reason, plan to be online at the task's first start time to ensure the program does not idle. 
