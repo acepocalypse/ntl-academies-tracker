@@ -121,7 +121,7 @@ Contains all scrape scripts
 7. Click "Next," and select the desired interval of repetition. Then, choose the start date and time, and click "Next".
 8. Choose "Start a Program". Enter the path name to your Python.exe file under "Program/script." You can also try locating it in your folders by clicking "Browse". In the Arguments section underneath, type the path to the run_all.py file  
 Ex: C:\Users\afarmus\vscode\ntl-academies-tracker\monitor\run_all.py"  
-9. Click "Next" to review the task settings and click "Finish" if satisfied. 
+9. Make sure to select "Open the properties dialogue when I select finish" box. Click "Next" to review the task settings and click "Finish" if satisfied. 
 10. Check the task's properties by clicking on it from the Task Scheduler Library. Ensure the settings allow for execution regardless of whether the user is logged on. 
 
 If you wish to edit, delete, disable, or review your new task, navigate to Task Scheduler using the above steps, find the left hand menu and select "Task Scheduler Library".
