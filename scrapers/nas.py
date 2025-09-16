@@ -245,15 +245,20 @@ def scrape_nas() -> pd.DataFrame:
     # --- Link collection ---
     links: List[str] = []
     current_page = 1
+    total_found = 0
     print(f"[{AID}] Starting link collection...")
 
     while True:
-        print(f"[{AID}] Processing directory page {current_page}...")
+        print(f"[{AID}] Navigating to page {current_page}...")
+        print(f"[{AID}] Scraping page {current_page}...")
         try:
             member_cards = WebDriverWait(driver, WAIT_SEC).until(
                 EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
             )
+            num_cards = len(member_cards)
+            print(f"[{AID}] Page {current_page}: found {num_cards} cards on page")
             links_found_on_page = 0
+            skipped_on_page = 0
             for card in member_cards:
                 try:
                     link_element = card.find_element(By.XPATH, ".//h5/a")
@@ -261,20 +266,22 @@ def scrape_nas() -> pd.DataFrame:
                     if href and href not in links:
                         links.append(href)
                         links_found_on_page += 1
+                    else:
+                        skipped_on_page += 1
                 except NoSuchElementException:
+                    skipped_on_page += 1
                     continue
-            print(f"[{AID}]   Found {links_found_on_page} new links on page {current_page}.")
+            total_found += links_found_on_page
+            print(f"[{AID}] Page {current_page}: processed {num_cards} cards, extracted {links_found_on_page} records, skipped {skipped_on_page} cards (total: {total_found})")
 
             # Pagination
             try:
                 next_button = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((By.XPATH, "//a[@class='next page-numbers']"))
                 )
-                # Click via JS for robustness
                 driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
                 time.sleep(0.5)
                 driver.execute_script("arguments[0].click();", next_button)
-                # Simple pause; if flaky, upgrade to EC.staleness_of on a sentinel
                 time.sleep(PAGE_PAUSE)
                 current_page += 1
             except (NoSuchElementException, TimeoutException):

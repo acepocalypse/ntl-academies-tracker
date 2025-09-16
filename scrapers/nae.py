@@ -283,6 +283,7 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
     - If `all_years` provided: collect links per year but de-duplicate across years, then scrape once per profile.
     - Saves timestamped snapshot to snapshots/3008/YYYYMMDD_HHMMSS.csv and optional legacy CSV to `filepath + "3008.csv"`.
     """
+    print(f"[{AID}] Starting scrape_nae (headless={headless})")
     driver = new_driver(headless=headless)
 
     # SPEED: use a shorter default wait for most interactions
@@ -303,11 +304,12 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
         else:
             print(f"[{AID}] Collecting all profile links (single pass)...")
             unique_links = collect_all_links(driver, wait_short)
+            print(f"[{AID}] Finished collecting all profile links.")
             seen_links = set(unique_links)
             print(f"[{AID}] Collected {len(unique_links)} unique links total")
 
-        for yr in years:
-            print(f"[{AID}] Collecting links for year {yr} …")
+        for idx, yr in enumerate(years, 1):
+            print(f"[{AID}] Collecting links for year {yr} ({idx}/{len(years)}) …")
             links = collect_links_for_year(driver, wait_short, yr)
             print(f"[{AID}] Year {yr}: {len(links)} profile links")
 
@@ -316,12 +318,14 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
                     seen_links.add(href)
                     unique_links.append(href)
                     fallback_year_for[href] = yr
+            print(f"[{AID}] Finished collecting links for year {yr} ({idx}/{len(years)})")
 
         # After collecting links (either from years or single pass), scrape once per unique URL
         total_links = len(unique_links)
         print(f"[{AID}] Starting to scrape {total_links} unique profiles...")
 
         for i, href in enumerate(unique_links, 1):
+            print(f"[{AID}] Scraping profile {i}/{total_links}: {href}")
             try:
                 rec = scrape_profile(
                     driver, wait_short, href, fallback_year=fallback_year_for.get(href)
@@ -343,25 +347,32 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
         print(f"[{AID}] Scraping complete: {len(records)} successful, {errors_count} errors")
 
     finally:
+        print(f"[{AID}] Quitting driver.")
         driver.quit()
 
     df = pd.DataFrame(records, dtype=str).fillna("")
     if not df.empty:
         # De-dupe on stable primary key
+        print(f"[{AID}] Deduplicating DataFrame on profile_url and name.")
         df = df.sort_values(["profile_url", "name"]).drop_duplicates(subset=["profile_url"], keep="first")
 
     # Persist: timestamped snapshot
-    snap_dir = Path("../snapshots") / AID
+    snap_dir = Path("snapshots") / AID
     snap_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     snap_path = snap_dir / f"{stamp}.csv"
+    print(f"[{AID}] Saving snapshot to {snap_path}")
     df.to_csv(snap_path, index=False)
 
     # Optional legacy CSV if your runner expects it
     try:
+        # `filepath` may exist in your global environment from other scripts
+        # and should end with a trailing slash/backslash.
         df.to_csv(f"{filepath}{AID}.csv", index=False)  # type: ignore[name-defined]
     except NameError:
+        # No `filepath` defined; ignore.
         pass
+
 
     if not df.empty:
         print(f"AwardID {AID} — scraped {len(df)} rows; snapshot {snap_path.name}")

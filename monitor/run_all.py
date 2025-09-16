@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
+import glob
+import os
 
 import pandas as pd
 
@@ -36,6 +38,7 @@ if isinstance(SNAPSHOTS_DIR, str):
 # Config
 # ----------------------------
 # ROOT = Path(__file__).resolve().parents[1]
+
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -47,20 +50,20 @@ logging.basicConfig(
 
 # Map award_id -> scraper module path (python -m <module>)
 AWARD_MODULES = {
+    "3008": "scrapers.nae",  # NAE
     "1909": "scrapers.nam",  # NAM
     "2023": "scrapers.nas",  # NAS
-    "3008": "scrapers.nae",  # NAE
+
 }
 
 # Map award_id -> human-friendly academy name
 AWARD_NAMES = {
+    "3008": "NAE",
     "1909": "NAM",
     "2023": "NAS",
-    "3008": "NAE",
 }
 
 DEFAULT_IGNORE_FIELDS = ["location"]  # tweak as needed
-
 
 # ----------------------------
 # Helpers
@@ -85,7 +88,31 @@ def run_scraper(module_name: str) -> int:
     Returns the process return code.
     """
     logging.info("Running scraper module: %s", module_name)
-    rc = subprocess.call([sys.executable, "-m", module_name], cwd=ROOT)
+    
+    # Log current working directory and environment
+    logging.info("Working directory: %s", ROOT)
+    logging.info("Python executable: %s", sys.executable)
+    
+    # Set timeout for up to 8 hours for any scraper
+    timeout_hours = 8
+    timeout_seconds = timeout_hours * 3600
+    
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", module_name], 
+            cwd=ROOT,
+            timeout=timeout_seconds,
+            stdout=None,  # Allow output to terminal
+            stderr=None   # Allow errors to terminal
+        )
+        rc = result.returncode
+    except subprocess.TimeoutExpired:
+        logging.error("Scraper module %s timed out after %d hours", module_name, timeout_hours)
+        return 1
+    except Exception as e:
+        logging.error("Failed to run scraper module %s: %s", module_name, e)
+        return 1
+    
     logging.info("Scraper module finished (%s) rc=%d", module_name, rc)
     return rc
 
@@ -127,6 +154,89 @@ def summarize_diff_paths(award_id: str, base_name: str) -> str:
     return "\n".join(parts) if parts else "(no diff files)"
 
 
+def validate_scraper_output(award_id: str, academy_name: str) -> tuple[bool, str]:
+    """
+    Validate that the scraper actually produced a CSV file.
+    Returns (success, diagnostic_message)
+    """
+    # Look for CSV files in snapshots/{award_id}/ directory structure
+    award_dir = SNAPSHOTS_DIR / award_id
+    if not award_dir.exists():
+        msg = f"No snapshots directory found for award {award_id} at {award_dir}"
+        logging.error(msg)
+        return False, msg
+    
+    # Look for timestamped CSV files (YYYYMMDD_HHMMSS.csv pattern)
+    csv_files = list(award_dir.glob("*.csv"))
+    
+    if not csv_files:
+        msg = f"No CSV files found for award {award_id} in {award_dir}"
+        logging.error(msg)
+        return False, msg
+    
+    # Check the most recent file by modification time
+    latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
+    
+    # Check file age (should be recent)
+    file_age = datetime.now().timestamp() - latest_file.stat().st_mtime
+    file_size = latest_file.stat().st_size
+    
+    logging.info("Latest CSV for %s (%s): %s (size: %d bytes, age: %.1f seconds)", 
+                award_id, academy_name, latest_file.name, file_size, file_age)
+    
+    # Set validation window for up to 9 hours (slightly longer than max run time)
+    max_age_hours = 9
+    max_age_seconds = max_age_hours * 3600
+    
+    if file_age > max_age_seconds:
+        msg = f"Latest CSV for {award_id} is too old: {file_age:.1f} seconds ({file_age/3600:.1f} hours)"
+        logging.warning(msg)
+        return False, msg
+    
+    if file_size == 0:
+        msg = f"Latest CSV for {award_id} is empty: {latest_file}"
+        logging.error(msg)
+        return False, msg
+    
+    # Try to read the CSV to validate format
+    try:
+        df = pd.read_csv(latest_file)
+        row_count = len(df)
+        col_count = len(df.columns)
+        logging.info("CSV validation for %s: %d rows, %d columns", award_id, row_count, col_count)
+        
+        if row_count == 0:
+            msg = f"CSV for {award_id} has no data rows"
+            logging.warning(msg)
+            return False, msg
+            
+    except Exception as e:
+        msg = f"Failed to read CSV for {award_id}: {e}"
+        logging.error(msg)
+        return False, msg
+    
+    return True, f"Valid CSV with {row_count} rows, {col_count} columns"
+
+
+def log_snapshots_directory_status():
+    """Log the current state of the snapshots directory for debugging."""
+    logging.info("Snapshots directory status: %s", SNAPSHOTS_DIR)
+    
+    if not SNAPSHOTS_DIR.exists():
+        logging.error("Snapshots directory does not exist!")
+        return
+    
+    # List all award subdirectories and their contents
+    for award_dir in SNAPSHOTS_DIR.iterdir():
+        if award_dir.is_dir() and award_dir.name.isdigit():
+            csv_files = list(award_dir.glob("*.csv"))
+            logging.info("Award %s directory: %d CSV files", award_dir.name, len(csv_files))
+            for csv_file in sorted(csv_files, key=lambda p: p.stat().st_mtime, reverse=True)[:3]:  # Show 3 most recent
+                size = csv_file.stat().st_size
+                mtime = datetime.fromtimestamp(csv_file.stat().st_mtime)
+                logging.info("  %s (size: %d, modified: %s)", csv_file.name, size, mtime)
+
+
 # ----------------------------
 # Main
 # ----------------------------
@@ -137,6 +247,10 @@ def main() -> None:
 
     run_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logging.info("=== Weekly run start: %s ===", run_ts)
+    logging.info("Award IDs to process: %s", award_ids)
+    
+    # Log initial state
+    log_snapshots_directory_status()
 
     lines: list[str] = [f"Run at {run_ts}\n"]
 
@@ -146,6 +260,10 @@ def main() -> None:
     for aid in award_ids:
         module = AWARD_MODULES.get(aid)
         academy_name = AWARD_NAMES.get(aid, aid)
+        
+        logging.info("Processing award %s (%s) with module %s", aid, academy_name, module)
+        print(f"Starting {academy_name} ({aid}) scraper...")  # Add console output
+        
         if not module:
             msg = f"• {aid} ({academy_name}): no scraper module mapping found"
             logging.error(msg)
@@ -155,19 +273,40 @@ def main() -> None:
 
         # 1) Execute scraper
         rc = run_scraper(module)
+        print(f"Scraper {academy_name} ({aid}) finished with return code: {rc}")  # Add console output
+        
+        # 2) Validate scraper output regardless of return code
+        output_valid, validation_msg = validate_scraper_output(aid, academy_name)
+        print(f"Validation for {academy_name} ({aid}): {validation_msg}")  # Add console output
+        
         if rc != 0:
-            msg = f"• {aid}: scraper FAILED (rc={rc})"
+            msg = f"• {aid}: scraper FAILED (rc={rc}) - {validation_msg}"
             logging.error(msg)
             lines.append(msg)
             any_failures = True
             continue
+        elif not output_valid:
+            msg = f"• {aid}: scraper completed but output invalid - {validation_msg}"
+            logging.error(msg)
+            lines.append(msg)
+            any_failures = True
+            continue
+        else:
+            logging.info("Scraper for %s (%s) completed successfully: %s", aid, academy_name, validation_msg)
 
-        # 2) Diff latest two snapshots
-        prev, curr, prev_path, curr_path = load_latest_two(
-            award_id=aid,
-            base=str(SNAPSHOTS_DIR),
-            ignore_fields=ignore_fields,
-        )
+        # 3) Diff latest two snapshots
+        try:
+            prev, curr, prev_path, curr_path = load_latest_two(
+                award_id=aid,
+                base=str(SNAPSHOTS_DIR),
+                ignore_fields=ignore_fields,
+            )
+        except Exception as e:
+            msg = f"• {aid} ({academy_name}): failed to load snapshots - {e}"
+            logging.error(msg)
+            lines.append(msg)
+            any_failures = True
+            continue
 
         if curr_path is None:
             msg = f"• {aid} ({academy_name}): no snapshots found after run"

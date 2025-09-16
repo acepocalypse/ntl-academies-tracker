@@ -52,8 +52,8 @@ def new_driver() -> webdriver.Chrome:
     opts.add_argument("--disable-default-apps")
     opts.add_argument("--disable-extensions")
     opts.add_argument("--log-level=3")  # Suppress INFO, WARNING, ERROR
-    # Uncomment to run headless in CI:
-    # opts.add_argument("--headless=new")
+    # Run headless:
+    opts.add_argument("--headless=new")
     return webdriver.Chrome(options=opts)
 
 def norm_text(s: str) -> str:
@@ -120,75 +120,120 @@ def scrape_nam() -> pd.DataFrame:
     time.sleep(4)  # Reduced from 7, usually sufficient
 
     db: List[Dict[str, str]] = []
+    page_num = 1
+
+    print(f"[{AID}] Starting NAM scraper...")
 
     try:
         while True:
-            # Wait for the grid of cards to load
-            cards = WebDriverWait(driver, WAIT_SEC).until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "article.elementor-post"))
-            )
+            print(f"[{AID}] Scraping page {page_num}...")
 
-            for card in cards:
+            page_attempts = 0
+            max_page_attempts = 3
+            while page_attempts < max_page_attempts:
                 try:
-                    # Pre-get card class for deceased check (single call)
-                    card_class = card.get_attribute("class") or ""
-                    deceased = "Y" if "health_status-deceased" in card_class else ""
+                    # Wait for the grid of cards to load
+                    WebDriverWait(driver, WAIT_SEC).until(
+                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "article.elementor-post"))
+                    )
+                    initial_card_count = len(driver.find_elements(By.CSS_SELECTOR, "article.elementor-post"))
+                    print(f"[{AID}] Page {page_num}: found {initial_card_count} cards on page")
 
-                    # Year (extract a 4-digit year if present)
-                    year = ""
-                    try:
-                        year_text = card.find_element(By.CSS_SELECTOR, "span.sd-post-date").text
-                        if year_text:
-                            m = re.search(r"\b(19|20)\d{2}\b", year_text)
-                            if m:
-                                year = m.group(0)
-                    except NoSuchElementException:
-                        pass
+                    page_records = 0
+                    skipped_cards = 0
 
-                    # Name - optimized selector
-                    name_raw = ""
-                    try:
-                        name_el = card.find_element(By.CSS_SELECTOR, "div.elementor-heading-title.elementor-size-default")
-                        name_raw = name_el.text or ""
-                    except NoSuchElementException:
-                        pass
+                    for i in range(initial_card_count):
+                        try:
+                            # Re-fetch cards before each access to avoid stale references
+                            cards = driver.find_elements(By.CSS_SELECTOR, "article.elementor-post")
+                            if i >= len(cards):
+                                print(f"[{AID}] Page {page_num}, Card {i+1}: Card index out of range, skipping")
+                                skipped_cards += 1
+                                continue
+                            card = cards[i]
 
-                    name = clean_name(name_raw)
+                            # Pre-get card class for deceased check (single call)
+                            card_class = card.get_attribute("class") or ""
+                            deceased = "Y" if "health_status-deceased" in card_class else ""
 
-                    # Affiliation
-                    aff = ""
-                    try:
-                        aff_el = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions span.sd-member-institutions")
-                        aff = aff_el.text or ""
-                    except NoSuchElementException:
-                        pass
+                            # Year (extract a 4-digit year if present)
+                            year = ""
+                            try:
+                                year_text = card.find_element(By.CSS_SELECTOR, "span.sd-post-date").text
+                                if year_text:
+                                    m = re.search(r"\b(19|20)\d{2}\b", year_text)
+                                    if m:
+                                        year = m.group(0)
+                            except NoSuchElementException:
+                                pass
 
-                    # Location (first category pill if present)
-                    location = ""
-                    try:
-                        loc_el = card.find_element(By.CSS_SELECTOR, "div.sd-post-categories--card-pills span.sd-post-category")
-                        location = loc_el.text or ""
-                    except NoSuchElementException:
-                        pass
+                            # Name - optimized selector
+                            name_raw = ""
+                            try:
+                                name_el = card.find_element(By.CSS_SELECTOR, "div.elementor-heading-title.elementor-size-default")
+                                name_raw = name_el.text or ""
+                            except NoSuchElementException:
+                                print(f"[{AID}] Page {page_num}, Card {i+1}: No name element found")
 
-                    # Profile URL (primary key)
-                    profile_url = first_href_in(card)
+                            name = clean_name(name_raw)
 
-                    db.append({
-                        "id":             AID,
-                        "govid":          GOVID,
-                        "govname":        GOVNAME,
-                        "award":          AWARD,
-                        "profile_url":    norm_text(profile_url),  # PRIMARY KEY
-                        "year":           norm_text(year),
-                        "name":           name,
-                        "affiliation":    norm_text(aff),
-                        "location":       norm_text(location),
-                        "deceased":       norm_text(deceased),
-                    })
-                except Exception:
-                    # Skip a bad card; continue scraping
-                    continue
+                            # Profile URL (primary key)
+                            profile_url = first_href_in(card)
+
+                            # Skip cards without name or profile URL (likely not member cards)
+                            if not name.strip() and not profile_url.strip():
+                                print(f"[{AID}] Page {page_num}, Card {i+1}: Skipping - no name or profile URL")
+                                skipped_cards += 1
+                                continue
+
+                            # Affiliation
+                            aff = ""
+                            try:
+                                aff_el = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions span.sd-member-institutions")
+                                aff = aff_el.text or ""
+                            except NoSuchElementException:
+                                pass
+
+                            # Location (first category pill if present)
+                            location = ""
+                            try:
+                                loc_el = card.find_element(By.CSS_SELECTOR, "div.sd-post-categories--card-pills span.sd-post-category")
+                                location = loc_el.text or ""
+                            except NoSuchElementException:
+                                pass
+
+                            db.append({
+                                "id":             AID,
+                                "govid":          GOVID,
+                                "govname":        GOVNAME,
+                                "award":          AWARD,
+                                "profile_url":    norm_text(profile_url),  # PRIMARY KEY
+                                "year":           norm_text(year),
+                                "name":           name,
+                                "affiliation":    norm_text(aff),
+                                "location":       norm_text(location),
+                                "deceased":       norm_text(deceased),
+                            })
+                            page_records += 1
+
+                        except StaleElementReferenceException:
+                            # Abort and retry the whole page
+                            raise
+                        except Exception as e:
+                            print(f"[{AID}] Page {page_num}, Card {i+1}: Error processing - {e}")
+                            skipped_cards += 1
+                            continue
+
+                    print(f"[{AID}] Page {page_num}: processed {initial_card_count} cards, extracted {page_records} records, skipped {skipped_cards} cards (total: {len(db)})")
+                    break  # Success, exit page retry loop
+
+                except StaleElementReferenceException:
+                    page_attempts += 1
+                    print(f"[{AID}] Page {page_num}: StaleElementReferenceException (attempt {page_attempts}/{max_page_attempts}), retrying page...")
+                    time.sleep(0.5)
+                    if page_attempts == max_page_attempts:
+                        print(f"[{AID}] Page {page_num}: Failed after {max_page_attempts} page retries, skipping page.")
+                        break
 
             # Pagination: robust approach using URL-based detection
             try:
@@ -214,6 +259,8 @@ def scrape_nam() -> pd.DataFrame:
                         if attempt == max_retries - 1:
                             raise  # Re-raise if all retries fail
                         time.sleep(0.5)  # Brief pause before retry
+                
+                print(f"[{AID}] Navigating to page {page_num + 1}...")
                 
                 # Wait for navigation to complete - use multiple indicators
                 navigation_complete = False
@@ -251,15 +298,20 @@ def scrape_nam() -> pd.DataFrame:
                         break
                 
                 time.sleep(PAGE_PAUSE)
+                page_num += 1
 
             except (NoSuchElementException, TimeoutException):
                 # No next page → finished
+                print(f"[{AID}] No more pages found. Scraping complete.")
                 break
     finally:
         driver.quit()
 
     # Build DataFrame (all as string), normalize NaNs to ""
     df = pd.DataFrame(db, dtype=str).fillna("")
+    print(f"Raw rows before deduplication: {len(df)}")
+    print(f"Unique profile_url count: {df['profile_url'].nunique()}")
+
     # Deduplicate by profile_url just in case
     if not df.empty:
         df = df.sort_values(["profile_url", "name"]).drop_duplicates(subset=["profile_url"], keep="first")
@@ -284,7 +336,7 @@ def scrape_nam() -> pd.DataFrame:
 
     if not df.empty:
         now = datetime.now().strftime("%H:%M:%S")
-        print(f"[{AID}] AwardID {AID} — scraped ({len(df)} rows) and saved snapshot {snap_path.name} at {now}")
+        print(f"[{AID}] AwardID {AID} — scraped ({len(df)} rows) from {page_num} pages and saved snapshot {snap_path.name} at {now}")
     else:
         print(f"[{AID}] AwardID {AID} — no rows scraped; snapshot still written: {snap_path.name}")
 
