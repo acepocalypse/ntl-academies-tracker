@@ -152,6 +152,7 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
     """
     links: List[str] = []
     seen: Set[str] = set()
+    page_num = 1  # Progress: track page number
 
     while True:
         # Short wait for items; pages are server-rendered
@@ -164,6 +165,7 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
             first_href_before = None
 
         # Collect links on this page
+        page_links_count = 0
         for item in driver.find_elements(By.CLASS_NAME, "flexible-list-item"):
             try:
                 href = item.find_element(By.CSS_SELECTOR, "span.name a").get_attribute("href")
@@ -171,8 +173,11 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
                 if href and href not in seen:
                     seen.add(href)
                     links.append(href)
+                    page_links_count += 1
             except NoSuchElementException:
                 continue
+
+        print(f"[{AID}] Collected {len(links)} links after page {page_num} (+{page_links_count} this page)")
 
         # Pagination: try to click "next"
         next_buttons = driver.find_elements(By.CSS_SELECTOR, "li.pager-pagenextb a.next_page")
@@ -200,6 +205,7 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
             break
 
         time.sleep(0.15)  # small, steady pacing for the listing
+        page_num += 1
 
     return links
 
