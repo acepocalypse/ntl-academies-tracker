@@ -128,8 +128,71 @@ def save_to_cache(url: str, data: Dict[str, str]) -> None:
 # ----------------------------
 # Core scraper
 # ----------------------------
-def scrape_profile(link: str) -> Dict[str, str]:
-    """Scrape a single member profile."""
+def extract_card_info(card) -> Dict[str, str]:
+    """Extract basic information from a member card on the directory page."""
+    try:
+        # Extract profile link
+        link_element = card.find_element(By.XPATH, ".//h5/a")
+        profile_url = (link_element.get_attribute("href") or "").strip()
+        
+        # Extract name from link text
+        name_text = norm_text(link_element.text)
+        
+        # Extract membership type and living/deceased status from CSS classes
+        card_classes = card.get_attribute("class") or ""
+        
+        # Parse membership type from classes
+        membership_type = ""
+        if "membership-type-member" in card_classes:
+            membership_type = "member"
+        elif "membership-type-international-member" in card_classes:
+            membership_type = "international-member"
+        elif "membership-type-emeritus" in card_classes:
+            membership_type = "emeritus"
+        elif "membership-type-public-welfare-medalist" in card_classes:
+            membership_type = "public-welfare-medalist"
+        
+        # Parse living/deceased status from classes
+        deceased_status = ""
+        if "living-deceased-deceased" in card_classes:
+            deceased_status = "Y"
+        elif "living-deceased-living" in card_classes:
+            deceased_status = ""
+        
+        # Extract affiliation from card-meta section
+        affiliation = ""
+        try:
+            card_meta = card.find_element(By.CSS_SELECTOR, ".card-meta")
+            meta_paragraphs = card_meta.find_elements(By.TAG_NAME, "p")
+            
+            # Look for affiliation - typically the second <p> after membership type
+            # Skip "International Member", "Member", etc. and "Primary Section", "Secondary Section"
+            for p in meta_paragraphs:
+                p_text = norm_text(p.text)
+                if (p_text and 
+                    not p_text.endswith("Member") and 
+                    not p_text.startswith("Primary Section") and 
+                    not p_text.startswith("Secondary Section") and
+                    not p_text.startswith("Section ") and
+                    "medalist" not in p_text.lower()):
+                    affiliation = p_text
+                    break
+        except NoSuchElementException:
+            affiliation = ""
+        
+        return {
+            "profile_url": profile_url,
+            "name": clean_name(name_text),
+            "membership_type": membership_type,
+            "deceased": deceased_status,
+            "affiliation": affiliation,
+        }
+    except Exception as e:
+        print(f"[{AID}] Error extracting card info: {e}")
+        return {}
+
+def scrape_profile_details(link: str, base_info: Dict[str, str]) -> Dict[str, str]:
+    """Scrape detailed information from a member profile page."""
     # Check cache first
     cached_data = get_from_cache(link)
     if cached_data:
@@ -147,26 +210,15 @@ def scrape_profile(link: str) -> Dict[str, str]:
             "govname": GOVNAME,
             "award": AWARD,
             "year": "",
-            "name": "",
             "affiliation": "",
-            "deceased": "",
             "profile_url": link,  # PRIMARY KEY
+            **base_info  # Include info from card
         }
 
         driver.get(link)
 
-        # Name - reduce wait time from 5 to 3 seconds
+        # Get affiliation - this is the main missing piece from cards
         try:
-            name_el = WebDriverWait(driver, 3).until(
-                EC.presence_of_element_located((By.XPATH, "//span[@class='fl-heading-text']"))
-            )
-            member["name"] = clean_name(name_el.text)
-        except (NoSuchElementException, TimeoutException):
-            member["name"] = ""
-
-        # Affiliation - optimize with faster lookups
-        try:
-            # Try direct CSS selector first - faster than XPath
             aff_div = driver.find_element(By.CSS_SELECTOR, "div[data-node='jd7ypfvaiw1h']")
             paragraphs = aff_div.find_elements(By.TAG_NAME, "p")
             aff_text = "\n".join([norm_text(p.text) for p in paragraphs if norm_text(p.text)])
@@ -174,7 +226,7 @@ def scrape_profile(link: str) -> Dict[str, str]:
         except NoSuchElementException:
             member["affiliation"] = ""
 
-        # Dynamic meta items - optimize with faster CSS selectors
+        # Dynamic meta items - get election year and other details
         try:
             meta_items = driver.find_elements(By.CSS_SELECTOR, "div.meta-item")
             for item in meta_items:
@@ -202,9 +254,6 @@ def scrape_profile(link: str) -> Dict[str, str]:
         except NoSuchElementException:
             pass
 
-        if member.get("deceased") != "Y":
-            member["deceased"] = ""
-
         # Normalize fields
         for k in list(member.keys()):
             member[k] = clean_name(member[k]) if k == "name" else norm_text(member[k])
@@ -215,138 +264,60 @@ def scrape_profile(link: str) -> Dict[str, str]:
 
     except TimeoutException:
         print(f"[{AID}] Timed out loading profile page: {link}")
-        return {"profile_url": link, "error": "timeout"}
+        return {"profile_url": link, "error": "timeout", **base_info}
     except Exception as e:
         print(f"[{AID}] Error processing profile {link}: {e}")
-        return {"profile_url": link, "error": str(e)}
+        return {"profile_url": link, "error": str(e), **base_info}
     finally:
         driver.quit()
 
 def scrape_nas() -> pd.DataFrame:
     """
-    Scrape NAS directory into a normalized DataFrame with a stable primary key (profile_url).
-    Saves a timestamped snapshot under snapshots/2023/, and (optionally) the flat CSV to filepath+2023.csv.
+    Scrape NAS directory by iterating through election years to capture year information.
     """
     driver = new_driver(headless=True)
     driver.implicitly_wait(5)
     
-    # --- Link collection ---
-    try:
-        driver.get(BASE_URL)
-        WebDriverWait(driver, WAIT_SEC).until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
-        )
-        print(f"[{AID}] Accessed: {BASE_URL}")
-    except Exception as e:
-        print(f"[{AID}] Error loading initial directory: {e}")
-        driver.quit()
-        return pd.DataFrame()
-
-    # --- Link collection ---
-    links: List[str] = []
-    current_page = 1
-    total_found = 0
-    print(f"[{AID}] Starting link collection...")
-
-    while True:
-        print(f"[{AID}] Navigating to page {current_page}...")
-        print(f"[{AID}] Scraping page {current_page}...")
-        try:
-            member_cards = WebDriverWait(driver, WAIT_SEC).until(
-                EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
-            )
-            num_cards = len(member_cards)
-            print(f"[{AID}] Page {current_page}: found {num_cards} cards on page")
-            links_found_on_page = 0
-            skipped_on_page = 0
-            for card in member_cards:
-                try:
-                    link_element = card.find_element(By.XPATH, ".//h5/a")
-                    href = (link_element.get_attribute("href") or "").strip()
-                    if href and href not in links:
-                        links.append(href)
-                        links_found_on_page += 1
-                    else:
-                        skipped_on_page += 1
-                except NoSuchElementException:
-                    skipped_on_page += 1
-                    continue
-            total_found += links_found_on_page
-            print(f"[{AID}] Page {current_page}: processed {num_cards} cards, extracted {links_found_on_page} records, skipped {skipped_on_page} cards (total: {total_found})")
-
-            # Pagination
-            try:
-                next_button = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.XPATH, "//a[@class='next page-numbers']"))
-                )
-                driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
-                time.sleep(0.5)
-                driver.execute_script("arguments[0].click();", next_button)
-                time.sleep(PAGE_PAUSE)
-                current_page += 1
-            except (NoSuchElementException, TimeoutException):
-                print(f"[{AID}] No 'Next' button — reached last page.")
-                break
-        except TimeoutException:
-            print(f"[{AID}] Timed out waiting for member cards on page {current_page}. Stopping link collection.")
-            break
-        except Exception as e:
-            print(f"[{AID}] Unexpected error on page {current_page}: {e}")
-            break
-
-    print(f"\n[{AID}] Completed link extraction. Total unique links: {len(links)}")
-
-    # --- Detail extraction with multithreading ---
-    db: List[Dict[str, str]] = []
+    all_cards_info: List[Dict[str, str]] = []
     processed_urls: Set[str] = set()
-    print(f"\n[{AID}] Starting detail extraction with {MAX_WORKERS} parallel workers...")
-
-    # Process links in smaller batches to avoid memory issues
-    batch_size = 100
-    total_links = len(links)
     
-    for batch_start in range(0, total_links, batch_size):
-        batch_end = min(batch_start + batch_size, total_links)
-        batch = links[batch_start:batch_end]
-        print(f"[{AID}] Processing batch {batch_start//batch_size + 1}/{(total_links + batch_size - 1)//batch_size} ({batch_end}/{total_links} profiles)...")
+    # Define year ranges to iterate through - NAS started in 1863
+    current_year = datetime.now().year
+    start_year = 1863
+    
+    print(f"[{AID}] Starting card collection by iterating through years {start_year}-{current_year}")
+    
+    # Iterate through individual years to get election year data
+    for year in range(start_year, current_year + 1):
+        # Use the correct parameter name: _election_year
+        year_url = f"{BASE_URL}&_election_year={year}"
+        cards_from_year = scrape_year_cards(driver, year, year_url, processed_urls)
+        all_cards_info.extend(cards_from_year)
         
-        # Use thread pool for parallel processing
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            # Submit all profiles in this batch to the thread pool
-            future_to_link = {executor.submit(scrape_profile, link): link for link in batch 
-                             if link not in processed_urls}
-            
-            # Process results as they complete
-            for i, future in enumerate(concurrent.futures.as_completed(future_to_link)):
-                link = future_to_link[future]
-                processed_urls.add(link)
-                
-                try:
-                    member = future.result()
-                    if member and "error" not in member:
-                        db.append(member)
-                    
-                    # Print progress every 10 profiles
-                    if (i + 1) % 10 == 0 or i == len(future_to_link) - 1:
-                        print(f"[{AID}]   Processed {i + 1}/{len(future_to_link)} profiles in current batch")
-                except Exception as e:
-                    print(f"[{AID}] Exception processing {link}: {e}")
-
-    print(f"\n[{AID}] Detail extraction complete.")
+        # Add small delay between years to be respectful
+        time.sleep(0.2)
     
-    # Build DataFrame
-    if not db:
-        print(f"[{AID}] No data scraped.")
-        return pd.DataFrame()
+    print(f"\n[{AID}] Year-based scraping collected {len(all_cards_info)} profiles")
+    
+    # If year filtering didn't work well, try without year filter as fallback
+    if len(all_cards_info) < 1000:
+        print(f"[{AID}] Year-based scraping yielded only {len(all_cards_info)} results, trying full directory scan...")
+        processed_urls.clear()  # Reset for full scan
+        fallback_cards = scrape_all_pages(driver, processed_urls)
+        
+        # If fallback got more results, use those instead
+        if len(fallback_cards) > len(all_cards_info):
+            print(f"[{AID}] Using fallback results: {len(fallback_cards)} profiles")
+            all_cards_info = fallback_cards
+        else:
+            print(f"[{AID}] Keeping year-based results: {len(all_cards_info)} profiles")
 
-    df = pd.DataFrame(db, dtype=str).fillna("")
-    # Example filter retained from your snippet (keep if meaningful for NAS)
-    if "public_welfare_medal" in df.columns:
-        df = df[~((df["public_welfare_medal"].notna()) & (df["year"] == ""))]
-
-    # De-dupe on primary key
-    if not df.empty:
-        df = df.sort_values(["profile_url", "name"]).drop_duplicates(subset=["profile_url"], keep="first")
+    driver.quit()
+    
+    print(f"\n[{AID}] Total unique profiles collected: {len(all_cards_info)}")
+    
+    if len(all_cards_info) < 5000:
+        print(f"[{AID}] WARNING: Only collected {len(all_cards_info)} profiles, expected around 7000.")
 
     # ----------------------------
     # Persist: timestamped snapshot + optional flat CSV
@@ -355,6 +326,7 @@ def scrape_nas() -> pd.DataFrame:
     snap_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     snap_path = snap_dir / f"{stamp}.csv"
+    df = pd.DataFrame(all_cards_info, dtype=str).fillna("")
     df.to_csv(snap_path, index=False)
 
     # Also write your legacy flat CSV if `filepath` exists in runtime
@@ -371,6 +343,166 @@ def scrape_nas() -> pd.DataFrame:
 
     return df
 
+def scrape_year_cards(driver: webdriver.Chrome, year: int, url: str, processed_urls: Set[str]) -> List[Dict[str, str]]:
+    """Scrape all cards for a specific election year."""
+    cards_info: List[Dict[str, str]] = []
+    
+    try:
+        driver.get(url)
+        # Wait for cards to load
+        WebDriverWait(driver, WAIT_SEC).until(
+            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
+        )
+        
+        # Check if there are any results for this year
+        member_cards = driver.find_elements(By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]")
+        
+        if not member_cards:
+            return cards_info
+            
+        cards_found = 0
+        # Process all pages for this year
+        page_num = 1
+        
+        while True:
+            # Process current page
+            for card in member_cards:
+                try:
+                    card_info = extract_card_info(card)
+                    if card_info and card_info.get("profile_url"):
+                        url_key = card_info["profile_url"]
+                        if url_key not in processed_urls:
+                            card_info["year"] = str(year)  # Add the election year from URL parameter
+                            cards_info.append(card_info)
+                            processed_urls.add(url_key)
+                            cards_found += 1
+                except Exception:
+                    continue
+            
+            # Check for next page within this year's results
+            try:
+                next_button = driver.find_element(By.XPATH, "//a[@class='next page-numbers']")
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
+                time.sleep(0.5)
+                driver.execute_script("arguments[0].click();", next_button)
+                time.sleep(PAGE_PAUSE)
+                
+                # Wait for new page to load
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
+                )
+                member_cards = driver.find_elements(By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]")
+                page_num += 1
+                
+            except (NoSuchElementException, TimeoutException):
+                # No more pages for this year
+                break
+                
+        if cards_found > 0:
+            print(f"[{AID}] Year {year}: found {cards_found} new members across {page_num} pages")
+            
+    except TimeoutException:
+        # No results for this year, which is normal for many years
+        pass
+    except Exception as e:
+        print(f"[{AID}] Error scraping year {year}: {e}")
+    
+    return cards_info
+
+
+def scrape_all_pages(driver: webdriver.Chrome, processed_urls: Set[str]) -> List[Dict[str, str]]:
+    """Fallback: scrape all pages without year filtering."""
+    try:
+        driver.get(BASE_URL)
+        WebDriverWait(driver, WAIT_SEC).until(
+            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
+        )
+        print(f"[{AID}] Accessed: {BASE_URL}")
+    except Exception as e:
+        print(f"[{AID}] Error loading initial directory: {e}")
+        return []
+
+    cards_info: List[Dict[str, str]] = []
+    current_page = 1
+    consecutive_empty_pages = 0
+    max_consecutive_empty = 3
+    print(f"[{AID}] Starting full directory scan...")
+
+    while consecutive_empty_pages < max_consecutive_empty:
+        print(f"[{AID}] Processing page {current_page}...")
+        page_start_time = time.time()
+        
+        try:
+            member_cards = WebDriverWait(driver, WAIT_SEC).until(
+                EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
+            )
+            num_cards = len(member_cards)
+            print(f"[{AID}] Page {current_page}: found {num_cards} cards on page")
+            
+            cards_found_on_page = 0
+            skipped_on_page = 0
+            
+            for i, card in enumerate(member_cards):
+                try:
+                    card_info = extract_card_info(card)
+                    if card_info and card_info.get("profile_url"):
+                        url = card_info["profile_url"]
+                        if url not in processed_urls:
+                            cards_info.append(card_info)
+                            processed_urls.add(url)
+                            cards_found_on_page += 1
+                        else:
+                            skipped_on_page += 1
+                except Exception:
+                    continue
+            
+            page_time = time.time() - page_start_time
+            print(f"[{AID}] Page {current_page}: processed {num_cards} cards in {page_time:.1f}s")
+            print(f"[{AID}]   New cards: {cards_found_on_page}, duplicates: {skipped_on_page}")
+            print(f"[{AID}]   Total unique profiles so far: {len(cards_info)}")
+
+            if cards_found_on_page == 0:
+                consecutive_empty_pages += 1
+                print(f"[{AID}] Warning: No new cards found on page {current_page}")
+            else:
+                consecutive_empty_pages = 0
+
+            # Pagination logic (same as before)
+            next_button = None
+            try:
+                next_button = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.XPATH, "//a[@class='next page-numbers']"))
+                )
+            except (NoSuchElementException, TimeoutException):
+                try:
+                    next_button = driver.find_element(By.XPATH, "//a[contains(@class, 'next')]")
+                except NoSuchElementException:
+                    break
+
+            if next_button:
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
+                    time.sleep(1)
+                    driver.execute_script("arguments[0].click();", next_button)
+                    time.sleep(PAGE_PAUSE)
+                    
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'fl-post-grid-post')]"))
+                    )
+                    current_page += 1
+                    print(f"[{AID}]   Navigated to page {current_page}")
+                except Exception as e:
+                    print(f"[{AID}] Error clicking next page: {e}")
+                    break
+        except Exception as e:
+            print(f"[{AID}] Error processing page {current_page}: {e}")
+            break
+
+    print(f"[{AID}] Completed full directory scan.")
+    print(f"[{AID}] Total profiles found: {len(cards_info)}")
+    
+    return cards_info
+
 # Allow running as a module: python -m scrapers.nas
 if __name__ == "__main__":
-    scrape_nas()
+    df = scrape_nas()

@@ -136,6 +136,78 @@ def _align_columns_for_compare(
     return prev_aligned, curr_aligned, compare_cols
 
 
+def _add_changed_columns_info(
+    modified_df: pd.DataFrame,
+    prev_common: pd.DataFrame,
+    curr_common: pd.DataFrame,
+    compare_cols: List[str],
+    pk: List[str],
+) -> pd.DataFrame:
+    """
+    Add a 'changed_columns' column to the modified DataFrame that lists
+    exactly which columns were modified for each record.
+    """
+    if modified_df.empty:
+        return modified_df
+    
+    changed_columns_list = []
+    
+    # For each row in the modified DataFrame
+    for idx in range(len(modified_df)):
+        # Get the primary key values for this row
+        pk_dict = {col: modified_df.iloc[idx][col] for col in pk}
+        
+        # Build a query to find matching rows
+        query_conditions = []
+        for col, val in pk_dict.items():
+            query_conditions.append(f"`{col}` == @val")
+            prev_common.loc[:, 'temp_val'] = val
+            curr_common.loc[:, 'temp_val'] = val
+        
+        # Find matching rows in prev_common and curr_common using boolean indexing
+        prev_mask = True
+        curr_mask = True
+        for col, val in pk_dict.items():
+            prev_mask = prev_mask & (prev_common[col] == val)
+            curr_mask = curr_mask & (curr_common[col] == val)
+        
+        prev_rows = prev_common[prev_mask]
+        curr_rows = curr_common[curr_mask]
+        
+        if len(prev_rows) > 0 and len(curr_rows) > 0:
+            prev_row = prev_rows.iloc[0]
+            curr_row = curr_rows.iloc[0]
+            
+            # Compare each column (excluding primary key columns)
+            changed_cols = []
+            for col in compare_cols:
+                if col not in pk:  # Skip primary key columns
+                    if str(prev_row[col]) != str(curr_row[col]):
+                        changed_cols.append(col)
+            
+            changed_columns_list.append("; ".join(changed_cols) if changed_cols else "")
+        else:
+            changed_columns_list.append("")
+    
+    # Add the changed_columns column as the first column after primary keys
+    modified_df = modified_df.copy()
+    
+    # Find the position to insert the changed_columns column
+    # We want it right after the primary key columns
+    insert_pos = len(pk)
+    
+    # Create a more efficient way to insert the column
+    cols = list(modified_df.columns)
+    new_cols = cols[:insert_pos] + ['changed_columns'] + cols[insert_pos:]
+    
+    # Create new DataFrame with reordered columns
+    new_df = modified_df.copy()
+    new_df['changed_columns'] = changed_columns_list
+    new_df = new_df[new_cols]
+    
+    return new_df
+
+
 def compute_diff(
     prev: pd.DataFrame,
     curr: pd.DataFrame,
@@ -205,6 +277,9 @@ def compute_diff(
             prev_full = prev.set_index(pk, drop=False).loc[changed_keys].reset_index(drop=True)
             curr_full = curr.set_index(pk, drop=False).loc[changed_keys].reset_index(drop=True)
             modified = prev_full.merge(curr_full, on=pk, suffixes=("_before", "_after"))
+            
+            # Add a column that specifies which fields changed
+            modified = _add_changed_columns_info(modified, prev_common, curr_common, compare_cols, pk)
 
     return {"added": added.reset_index(drop=True),
             "removed": removed.reset_index(drop=True),

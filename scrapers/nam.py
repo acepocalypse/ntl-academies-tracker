@@ -129,8 +129,7 @@ def scrape_nam() -> pd.DataFrame:
             print(f"[{AID}] Scraping page {page_num}...")
 
             page_attempts = 0
-            max_page_attempts = 3
-            while page_attempts < max_page_attempts:
+            while True:  # Keep retrying pages until successful - never skip a page
                 try:
                     # Wait for the grid of cards to load
                     WebDriverWait(driver, WAIT_SEC).until(
@@ -143,96 +142,118 @@ def scrape_nam() -> pd.DataFrame:
                     skipped_cards = 0
 
                     for i in range(initial_card_count):
-                        try:
-                            # Re-fetch cards before each access to avoid stale references
-                            cards = driver.find_elements(By.CSS_SELECTOR, "article.elementor-post")
-                            if i >= len(cards):
-                                print(f"[{AID}] Page {page_num}, Card {i+1}: Card index out of range, skipping")
-                                skipped_cards += 1
-                                continue
-                            card = cards[i]
-
-                            # Pre-get card class for deceased check (single call)
-                            card_class = card.get_attribute("class") or ""
-                            deceased = "Y" if "health_status-deceased" in card_class else ""
-
-                            # Year (extract a 4-digit year if present)
-                            year = ""
+                        card_attempts = 0
+                        card_processed = False
+                        
+                        while not card_processed:  # Keep retrying cards until successful - never skip a card
                             try:
-                                year_text = card.find_element(By.CSS_SELECTOR, "span.sd-post-date").text
-                                if year_text:
-                                    m = re.search(r"\b(19|20)\d{2}\b", year_text)
-                                    if m:
-                                        year = m.group(0)
-                            except NoSuchElementException:
-                                pass
+                                # Re-fetch cards before each access to avoid stale references
+                                cards = driver.find_elements(By.CSS_SELECTOR, "article.elementor-post")
+                                if i >= len(cards):
+                                    # Wait a bit and re-fetch in case page is still loading
+                                    time.sleep(0.5)
+                                    cards = driver.find_elements(By.CSS_SELECTOR, "article.elementor-post")
+                                    if i >= len(cards):
+                                        print(f"[{AID}] Page {page_num}, Card {i+1}: Card index out of range, waiting for page to fully load...")
+                                        time.sleep(1.0)
+                                        continue  # Retry instead of skipping
+                                card = cards[i]
 
-                            # Name - optimized selector
-                            name_raw = ""
-                            try:
-                                name_el = card.find_element(By.CSS_SELECTOR, "div.elementor-heading-title.elementor-size-default")
-                                name_raw = name_el.text or ""
-                            except NoSuchElementException:
-                                print(f"[{AID}] Page {page_num}, Card {i+1}: No name element found")
+                                # Pre-get card class for deceased check (single call)
+                                card_class = card.get_attribute("class") or ""
+                                deceased = "Y" if "health_status-deceased" in card_class else ""
 
-                            name = clean_name(name_raw)
+                                # Year (extract a 4-digit year if present)
+                                year = ""
+                                try:
+                                    year_text = card.find_element(By.CSS_SELECTOR, "span.sd-post-date").text
+                                    if year_text:
+                                        m = re.search(r"\b(19|20)\d{2}\b", year_text)
+                                        if m:
+                                            year = m.group(0)
+                                except NoSuchElementException:
+                                    pass
 
-                            # Profile URL (primary key)
-                            profile_url = first_href_in(card)
+                                # Name - optimized selector
+                                name_raw = ""
+                                try:
+                                    name_el = card.find_element(By.CSS_SELECTOR, "div.elementor-heading-title.elementor-size-default")
+                                    name_raw = name_el.text or ""
+                                except NoSuchElementException:
+                                    print(f"[{AID}] Page {page_num}, Card {i+1}: No name element found")
 
-                            # Skip cards without name or profile URL (likely not member cards)
-                            if not name.strip() and not profile_url.strip():
-                                print(f"[{AID}] Page {page_num}, Card {i+1}: Skipping - no name or profile URL")
-                                skipped_cards += 1
-                                continue
+                                name = clean_name(name_raw)
 
-                            # Affiliation
-                            aff = ""
-                            try:
-                                aff_el = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions span.sd-member-institutions")
-                                aff = aff_el.text or ""
-                            except NoSuchElementException:
-                                pass
+                                # Profile URL (primary key)
+                                profile_url = first_href_in(card)
 
-                            # Location (first category pill if present)
-                            location = ""
-                            try:
-                                loc_el = card.find_element(By.CSS_SELECTOR, "div.sd-post-categories--card-pills span.sd-post-category")
-                                location = loc_el.text or ""
-                            except NoSuchElementException:
-                                pass
+                                # Skip cards without name or profile URL (likely not member cards)
+                                if not name.strip() and not profile_url.strip():
+                                    print(f"[{AID}] Page {page_num}, Card {i+1}: Skipping - no name or profile URL")
+                                    skipped_cards += 1
+                                    card_processed = True
+                                    break
 
-                            db.append({
-                                "id":             AID,
-                                "govid":          GOVID,
-                                "govname":        GOVNAME,
-                                "award":          AWARD,
-                                "profile_url":    norm_text(profile_url),  # PRIMARY KEY
-                                "year":           norm_text(year),
-                                "name":           name,
-                                "affiliation":    norm_text(aff),
-                                "location":       norm_text(location),
-                                "deceased":       norm_text(deceased),
-                            })
-                            page_records += 1
+                                # Affiliation
+                                aff = ""
+                                try:
+                                    aff_el = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions span.sd-member-institutions")
+                                    aff = aff_el.text or ""
+                                except NoSuchElementException:
+                                    pass
 
-                        except StaleElementReferenceException:
-                            # Abort and retry the whole page
-                            raise
-                        except Exception as e:
-                            print(f"[{AID}] Page {page_num}, Card {i+1}: Error processing - {e}")
-                            skipped_cards += 1
-                            continue
+                                # Location (first category pill if present)
+                                location = ""
+                                try:
+                                    loc_el = card.find_element(By.CSS_SELECTOR, "div.sd-post-categories--card-pills span.sd-post-category")
+                                    location = loc_el.text or ""
+                                except NoSuchElementException:
+                                    pass
+
+                                db.append({
+                                    "id":             AID,
+                                    "govid":          GOVID,
+                                    "govname":        GOVNAME,
+                                    "award":          AWARD,
+                                    "profile_url":    norm_text(profile_url),  # PRIMARY KEY
+                                    "year":           norm_text(year),
+                                    "name":           name,
+                                    "affiliation":    norm_text(aff),
+                                    "location":       norm_text(location),
+                                    "deceased":       norm_text(deceased),
+                                })
+                                page_records += 1
+                                card_processed = True
+
+                            except StaleElementReferenceException:
+                                card_attempts += 1
+                                print(f"[{AID}] Page {page_num}, Card {i+1}: StaleElementReferenceException (attempt {card_attempts}), retrying card...")
+                                # Exponential backoff for card retries
+                                time.sleep(min(0.3 * (2 ** min(card_attempts-1, 4)), 2.0))
+                            except Exception as e:
+                                card_attempts += 1
+                                print(f"[{AID}] Page {page_num}, Card {i+1}: Error processing (attempt {card_attempts}) - {e}")
+                                # For other exceptions, also retry with backoff instead of giving up
+                                time.sleep(min(0.5 * (2 ** min(card_attempts-1, 3)), 3.0))
+                                if card_attempts > 10:  # Only skip after many attempts to avoid infinite loops on truly broken cards
+                                    print(f"[{AID}] Page {page_num}, Card {i+1}: Failed after {card_attempts} attempts, marking as skipped but will continue")
+                                    skipped_cards += 1
+                                    card_processed = True
 
                     print(f"[{AID}] Page {page_num}: processed {initial_card_count} cards, extracted {page_records} records, skipped {skipped_cards} cards (total: {len(db)})")
                     break  # Success, exit page retry loop
 
                 except StaleElementReferenceException:
                     page_attempts += 1
-                    print(f"[{AID}] Page {page_num}: StaleElementReferenceException (attempt {page_attempts}/{max_page_attempts}), retrying page...")
-                    time.sleep(0.5)
-                    if page_attempts == max_page_attempts:
-                        print(f"[{AID}] Page {page_num}: Failed after {max_page_attempts} page retries, skipping page.")
+                    print(f"[{AID}] Page {page_num}: StaleElementReferenceException (attempt {page_attempts}), retrying page...")
+                    # Exponential backoff for page retries
+                    time.sleep(min(0.5 * (2 ** min(page_attempts-1, 4)), 5.0))
+                except Exception as e:
+                    page_attempts += 1
+                    print(f"[{AID}] Page {page_num}: Unexpected error (attempt {page_attempts}) - {e}")
+                    time.sleep(min(1.0 * (2 ** min(page_attempts-1, 3)), 10.0))
+                    if page_attempts > 15:  # Only give up after many attempts to avoid infinite loops
+                        print(f"[{AID}] Page {page_num}: Failed after {page_attempts} attempts, attempting to continue to next page")
                         break
 
             # Pagination: robust approach using URL-based detection

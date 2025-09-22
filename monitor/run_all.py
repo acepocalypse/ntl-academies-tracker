@@ -93,22 +93,14 @@ def run_scraper(module_name: str) -> int:
     logging.info("Working directory: %s", ROOT)
     logging.info("Python executable: %s", sys.executable)
     
-    # Set timeout for up to 8 hours for any scraper
-    timeout_hours = 8
-    timeout_seconds = timeout_hours * 3600
-    
     try:
         result = subprocess.run(
             [sys.executable, "-m", module_name], 
             cwd=ROOT,
-            timeout=timeout_seconds,
             stdout=None,  # Allow output to terminal
             stderr=None   # Allow errors to terminal
         )
         rc = result.returncode
-    except subprocess.TimeoutExpired:
-        logging.error("Scraper module %s timed out after %d hours", module_name, timeout_hours)
-        return 1
     except Exception as e:
         logging.error("Failed to run scraper module %s: %s", module_name, e)
         return 1
@@ -184,8 +176,8 @@ def validate_scraper_output(award_id: str, academy_name: str) -> tuple[bool, str
     logging.info("Latest CSV for %s (%s): %s (size: %d bytes, age: %.1f seconds)", 
                 award_id, academy_name, latest_file.name, file_size, file_age)
     
-    # Set validation window for up to 9 hours (slightly longer than max run time)
-    max_age_hours = 9
+    # Set validation window for up to 24 hours to allow long-running scrapers
+    max_age_hours = 24
     max_age_seconds = max_age_hours * 3600
     
     if file_age > max_age_seconds:
