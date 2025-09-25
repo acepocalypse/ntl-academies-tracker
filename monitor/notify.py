@@ -93,7 +93,7 @@ def email_notify(
         # Attach files if any
         for filepath in attachments:
             if not os.path.isfile(filepath):
-                print(f"⚠️ Attachment not found: {filepath}")
+                print(f"[WARNING] Attachment not found: {filepath}")
                 continue
             with open(filepath, "rb") as f:
                 part = MIMEBase("application", "octet-stream")
@@ -108,9 +108,9 @@ def email_notify(
         raw_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         message = {'raw': raw_msg}
         sent_msg = service.users().messages().send(userId="me", body=message).execute()
-        print(f"✅ Email sent to {', '.join(to_addrs)} (Message ID: {sent_msg['id']})")
+        print(f"[SUCCESS] Email sent to {', '.join(to_addrs)} (Message ID: {sent_msg['id']})")
     except HttpError as e:
-        print(f"❌ Failed to send email to {', '.join(to_addrs)}: {e}")
+        print(f"[ERROR] Failed to send email to {', '.join(to_addrs)}: {e}")
 
 # Optional quick test
 if __name__ == "__main__":

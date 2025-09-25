@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime
+import sys
 from pathlib import Path
 from typing import Dict, List
 
@@ -345,7 +346,11 @@ def scrape_nam() -> pd.DataFrame:
                 break
                 
     finally:
-        driver.quit()
+        # Ensure driver shutdown never forces a non-zero process exit
+        try:
+            driver.quit()
+        except Exception as e:
+            print(f"[{AID}] Warning: driver.quit() raised an exception: {e}")
 
     # Build DataFrame (all as string), normalize NaNs to ""
     df = pd.DataFrame(db, dtype=str).fillna("")
@@ -394,14 +399,16 @@ def scrape_nam() -> pd.DataFrame:
     df.to_csv(snap_path, index=False)
 
     # Also write your legacy flat CSV if `filepath` is provided by the caller's runtime
-    try:
-        # `filepath` may exist in your global environment from other scripts
-        # and should end with a trailing slash/backslash.
-        df.to_csv(f"{filepath}{AID}.csv", index=False)  # type: ignore[name-defined]
-    except NameError:
-        # No `filepath` defined; ignore.
-        pass
-
+    legacy_target = globals().get("filepath")
+    if legacy_target:
+        try:
+            legacy_root = Path(str(legacy_target))
+            legacy_file = legacy_root if legacy_root.suffix.lower() == ".csv" else legacy_root / f"{AID}.csv"
+            legacy_file.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(legacy_file, index=False)
+            print(f"[{AID}] Legacy CSV written to {legacy_file}")
+        except Exception as exc:
+            print(f"[{AID}] Legacy CSV export skipped: {exc}")
     if not df.empty:
         now = datetime.now().strftime("%H:%M:%S")
         print(f"[{AID}] AwardID {AID} — scraped ({len(df)} rows) from {page_num} pages and saved snapshot {snap_path.name} at {now}")
@@ -412,4 +419,13 @@ def scrape_nam() -> pd.DataFrame:
 
 # Allow: python -m scrapers.nam
 if __name__ == "__main__":
-    scrape_nam()
+    try:
+        scrape_nam()
+        # Explicitly signal success so orchestrators don't mis-read an implicit non-zero
+        sys.exit(0)
+    except SystemExit as se:  # Respect explicit exits
+        raise
+    except Exception as e:
+        # Print a concise message; full trace not needed for weekly batch summary
+        print(f"[{AID}] Unhandled exception: {e}", file=sys.stderr)
+        sys.exit(1)
