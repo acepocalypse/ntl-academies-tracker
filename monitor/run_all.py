@@ -29,6 +29,7 @@ from monitor.diff_utils import (
     SNAPSHOTS_DIR,
 )
 from monitor.notify import email_notify
+from monitor.removal_verifier import verify_removed_rows
 
 # Ensure SNAPSHOTS_DIR is a Path object
 if isinstance(SNAPSHOTS_DIR, str):
@@ -137,13 +138,16 @@ def summarize_diff_paths(award_id: str, base_name: str) -> str:
     Each file is listed on its own line.
     """
     diff_dir = SNAPSHOTS_DIR / "diffs"
-    parts = []
-    for suffix in ("added", "removed", "modified"):
-        p = diff_dir / f"{award_id}__{base_name}__{suffix}.csv"
-        if p.exists() and p.stat().st_size > 0:
-            parts.append(p.name)
-    # List each file on its own line, or show (no diff files)
-    return "\n".join(parts) if parts else "(no diff files)"
+    if not diff_dir.exists():
+        return "(no diff files)"
+
+    pattern = f"{award_id}__{base_name}__*.csv"
+    files = sorted(
+        p.name
+        for p in diff_dir.glob(pattern)
+        if p.is_file() and p.stat().st_size > 0
+    )
+    return "\n".join(files) if files else "(no diff files)"
 
 
 def validate_scraper_output(award_id: str, academy_name: str) -> tuple[bool, str]:
@@ -320,6 +324,19 @@ def main() -> None:
             continue
 
         diff = compute_diff(prev, curr, ignore_fields=ignore_fields)
+
+        removed_verified, removed_still_present, removed_errors = verify_removed_rows(
+            aid,
+            diff.get("removed"),
+        )
+        diff["removed"] = removed_verified
+
+        removal_notes: list[str] = []
+        if not removed_still_present.empty:
+            removal_notes.append(f"{len(removed_still_present)} still live (removed_still_present)")
+        if not removed_errors.empty:
+            removal_notes.append(f"{len(removed_errors)} check errors (removed_check_errors)")
+
         summary = diff_summary_str(diff)
         # 3) Write diff CSVs (if non-empty)
         diff_dir = SNAPSHOTS_DIR / "diffs"
@@ -340,20 +357,36 @@ def main() -> None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_name = timestamp
 
-        diff_files = {}
-        for key in ("added", "removed", "modified"):
-            diff_files[key] = diff_dir / f"{aid}__{base_name}__{key}.csv"
+        diff_prefix = diff_dir / f"{aid}__{base_name}"
+        diff_files = {
+            key: diff_dir / f"{aid}__{base_name}__{key}.csv"
+            for key in ("added", "removed", "modified")
+        }
 
-        written = write_diff_csvs(diff, diff_dir / f"{aid}__{base_name}")
+        write_diff_csvs(diff, diff_prefix)
+
+        extra_diff_files: dict[str, Path] = {}
+        if not removed_still_present.empty:
+            extra_path = diff_dir / f"{aid}__{base_name}__removed_still_present.csv"
+            removed_still_present.to_csv(extra_path, index=False)
+            extra_diff_files["removed_still_present"] = extra_path
+
+        if not removed_errors.empty:
+            error_path = diff_dir / f"{aid}__{base_name}__removed_check_errors.csv"
+            removed_errors.to_csv(error_path, index=False)
+            extra_diff_files["removed_check_errors"] = error_path
+
         written_str = summarize_diff_paths(aid, base_name)
 
-        # Collect diff file paths for attachments
-        for key in ("added", "removed", "modified"):
-            p = diff_files[key]
-            if p.exists() and p.stat().st_size > 0:
-                all_diff_files.append(str(p))
+        for path in list(diff_files.values()) + list(extra_diff_files.values()):
+            if path.exists() and path.stat().st_size > 0:
+                path_str = str(path)
+                if path_str not in all_diff_files:
+                    all_diff_files.append(path_str)
 
-        msg = f"• {aid} ({academy_name}): {base_name} — {summary}"
+        msg = f"* {aid} ({academy_name}): {base_name} - {summary}"
+        if removal_notes:
+            msg += "\nDouble-check: " + "; ".join(removal_notes)
         if written_str != "(no diff files)":
             msg += "\n" + written_str
         logging.info(msg)
