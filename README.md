@@ -25,6 +25,7 @@ NTL-Academies-Tracker/
 │ ├─ orchestrator.py
 │ ├─ run_all.py
 │ ├─ send_email.py
+│ ├─ removal_verifier.py
 │ └─ test_runner.py
 │
 ├─ scrapers/
@@ -75,6 +76,9 @@ Contains workflow management files including email alert automation and scrape r
 - lightweight diffing pipeline tester without running full scrapes
 - compares lates two snapshots of some specific award ID
 - computes and writes CSV diffs and logs summary to file and console
+
+#### removal_verifier.py
+- Ensures accuracy of data extraction by re-running scrape process for individual profiles indicated by scripts to have been removed
 
 ### Scrapers  
 Contains all scrape scripts
