@@ -217,11 +217,43 @@ def scrape_nam() -> pd.DataFrame:
                         # Profile URL (primary key)
                         profile_url = first_href_in(card)
 
-                        # Affiliation
+                        # Member Type (check for "Emeritus" or other types)
+                        member_type = ""
+                        try:
+                            # Look for member type labels (e.g., "Emeritus")
+                            type_elements = card.find_elements(By.CSS_SELECTOR, "div.sd-member-institutions span")
+                            for elem in type_elements:
+                                text = (elem.text or "").strip()
+                                if text.lower() in ["emeritus", "international", "foreign associate"]:
+                                    member_type = text
+                                    break
+                        except Exception:
+                            pass
+
+                        # Affiliation - get actual institution, skip member type labels
                         aff = ""
                         try:
-                            aff_el = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions span.sd-member-institutions")
-                            aff = aff_el.text or ""
+                            # Get all text content within the institutions div
+                            aff_container = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions")
+                            # Get all span elements
+                            aff_spans = aff_container.find_elements(By.CSS_SELECTOR, "span")
+                            
+                            for span in aff_spans:
+                                text = (span.text or "").strip()
+                                # Skip empty, skip member type labels, and skip "No Affiliation"
+                                if text and text.lower() not in ["emeritus", "international", "foreign associate", "no affiliation", ""]:
+                                    aff = text
+                                    break
+                            
+                            # Fallback: if no valid affiliation found in spans, try getting all text
+                            if not aff:
+                                full_text = (aff_container.text or "").strip()
+                                # Split by newlines and filter out member types and "No Affiliation"
+                                lines = [line.strip() for line in full_text.split("\n") if line.strip()]
+                                for line in lines:
+                                    if line.lower() not in ["emeritus", "international", "foreign associate", "no affiliation"]:
+                                        aff = line
+                                        break
                         except NoSuchElementException:
                             pass
 
@@ -246,6 +278,7 @@ def scrape_nam() -> pd.DataFrame:
                             "year":           norm_text(year),
                             "name":           name or f"missing_name_{fallback_id}",
                             "affiliation":    norm_text(aff),
+                            "member_type":    norm_text(member_type),
                             "location":       norm_text(location),
                             "deceased":       norm_text(deceased),
                         }

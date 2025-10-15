@@ -165,16 +165,16 @@ def extract_card_info(card) -> Dict[str, str]:
             card_meta = card.find_element(By.CSS_SELECTOR, ".card-meta")
             meta_paragraphs = card_meta.find_elements(By.TAG_NAME, "p")
             
-            # Look for affiliation - typically the second <p> after membership type
-            # Skip "International Member", "Member", etc. and "Primary Section", "Secondary Section"
+            # Look for affiliation - skip membership type and section labels
+            membership_labels = ["member", "international member", "emeritus", "public welfare medalist"]
             for p in meta_paragraphs:
                 p_text = norm_text(p.text)
+                p_lower = p_text.lower()
                 if (p_text and 
-                    not p_text.endswith("Member") and 
+                    p_lower not in membership_labels and
                     not p_text.startswith("Primary Section") and 
                     not p_text.startswith("Secondary Section") and
-                    not p_text.startswith("Section ") and
-                    "medalist" not in p_text.lower()):
+                    not p_text.startswith("Section ")):
                     affiliation = p_text
                     break
         except NoSuchElementException:
