@@ -327,6 +327,13 @@ def scrape_nas() -> pd.DataFrame:
     if len(all_cards_info) < 5000:
         print(f"[{AID}] WARNING: Only collected {len(all_cards_info)} profiles, expected around 7000.")
 
+    # Add standard metadata fields to all cards
+    for card_info in all_cards_info:
+        card_info.setdefault("id", AID)
+        card_info.setdefault("govid", GOVID)
+        card_info.setdefault("govname", GOVNAME)
+        card_info.setdefault("award", AWARD)
+
     # ----------------------------
     # Persist: timestamped snapshot + optional flat CSV
     # ----------------------------
