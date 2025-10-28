@@ -68,6 +68,22 @@ def save_backup_snapshot(primary_snapshot_path: Path, award_id: str) -> Optional
         print(f"[{award_id}] Backup saved to: {backup_path}")
         return backup_path
     
+    except PermissionError as e:
+        print(f"[{award_id}] Warning: Permission denied saving backup to {backup_root} - {e}")
+        print(f"[{award_id}] Check that you have write access to the backup location")
+        return None
+    except FileNotFoundError as e:
+        print(f"[{award_id}] Warning: Backup location not found: {backup_root} - {e}")
+        print(f"[{award_id}] Check that the network drive is connected and accessible")
+        return None
+    except OSError as e:
+        # Handle network-related errors (like drive disconnected)
+        if hasattr(e, 'winerror') and e.winerror in (53, 67, 1200):  # Network path not found, network name not found, etc.
+            print(f"[{award_id}] Warning: Network drive error saving backup to {backup_root} - {e}")
+            print(f"[{award_id}] Check that the network drive is connected and accessible")
+        else:
+            print(f"[{award_id}] Warning: OS error saving backup to {backup_root} - {e}")
+        return None
     except Exception as e:
         print(f"[{award_id}] Warning: Failed to save backup - {e}")
         return None
