@@ -15,6 +15,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
 
+# Import backup utility
+try:
+    from monitor.backup_utils import save_backup_snapshot
+except ImportError:
+    # Fallback if import fails
+    def save_backup_snapshot(*args, **kwargs):
+        return None
+
 # ----------------------------
 # Constants / Config
 # ----------------------------
@@ -430,6 +438,9 @@ def scrape_nam() -> pd.DataFrame:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     snap_path = snap_dir / f"{stamp}.csv"
     df.to_csv(snap_path, index=False)
+
+    # Save to secondary backup location (if configured)
+    save_backup_snapshot(snap_path, AID)
 
     # Also write your legacy flat CSV if `filepath` is provided by the caller's runtime
     legacy_target = globals().get("filepath")

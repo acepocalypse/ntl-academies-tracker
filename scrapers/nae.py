@@ -18,6 +18,14 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 # If you use webdriver_manager, uncomment the next line and the call in new_driver()
 # from webdriver_manager.chrome import ChromeDriverManager
 
+# Import backup utility
+try:
+    from monitor.backup_utils import save_backup_snapshot
+except ImportError:
+    # Fallback if import fails
+    def save_backup_snapshot(*args, **kwargs):
+        return None
+
 AID        = "3008"
 AWARD      = "NAE Membership"
 GOVID      = "221"
@@ -369,6 +377,9 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
     snap_path = snap_dir / f"{stamp}.csv"
     print(f"[{AID}] Saving snapshot to {snap_path}")
     df.to_csv(snap_path, index=False)
+
+    # Save to secondary backup location (if configured)
+    save_backup_snapshot(snap_path, AID)
 
     # Optional legacy CSV if your runner expects it
     try:
