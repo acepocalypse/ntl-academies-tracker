@@ -18,6 +18,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
+# Import backup utility
+try:
+    from monitor.backup_utils import save_backup_snapshot
+except ImportError:
+    # Fallback if import fails
+    def save_backup_snapshot(*args, **kwargs):
+        return None
+
 # ----------------------------
 # Constants / Config
 # ----------------------------
@@ -81,6 +89,13 @@ def clean_name(name: str) -> str:
             name = name[:-len(s)]
     return norm_text(name)
 
+def clean_url(url: str) -> str:
+    """Remove query parameters and fragments to stabilize the primary key."""
+    if not url:
+        return ""
+    # Split on '?' to drop query strings, split on '#' to drop fragments
+    return url.split("?")[0].split("#")[0].strip()
+
 def clean_key(text: str) -> Optional[str]:
     """Sanitize dynamic label into a safe key name."""
     if not text:
@@ -133,7 +148,7 @@ def extract_card_info(card) -> Dict[str, str]:
     try:
         # Extract profile link
         link_element = card.find_element(By.XPATH, ".//h5/a")
-        profile_url = (link_element.get_attribute("href") or "").strip()
+        profile_url = clean_url(link_element.get_attribute("href") or "")
         
         # Extract name from link text
         name_text = norm_text(link_element.text)
@@ -161,21 +176,32 @@ def extract_card_info(card) -> Dict[str, str]:
         
         # Extract affiliation from card-meta section
         affiliation = ""
+        death_year = ""
         try:
             card_meta = card.find_element(By.CSS_SELECTOR, ".card-meta")
             meta_paragraphs = card_meta.find_elements(By.TAG_NAME, "p")
             
-            # Look for affiliation - typically the second <p> after membership type
-            # Skip "International Member", "Member", etc. and "Primary Section", "Secondary Section"
+            # Look for affiliation - skip membership type and section labels
+            membership_labels = ["member", "international member", "emeritus", "public welfare medalist"]
             for p in meta_paragraphs:
                 p_text = norm_text(p.text)
+                p_lower = p_text.lower()
                 if (p_text and 
-                    not p_text.endswith("Member") and 
+                    p_lower not in membership_labels and
                     not p_text.startswith("Primary Section") and 
                     not p_text.startswith("Secondary Section") and
-                    not p_text.startswith("Section ") and
-                    "medalist" not in p_text.lower()):
-                    affiliation = p_text
+                    not p_text.startswith("Section ")):
+                    
+                    # Check if this "affiliation" is actually a date range (e.g. for deceased members)
+                    # Example: "May 28, 1807 - December 14, 1873"
+                    # Regex to find a year at the end of the string
+                    date_match = re.search(r'-\s*[A-Za-z]+\s+\d{1,2},\s+(\d{4})', p_text)
+                    if date_match:
+                        death_year = date_match.group(1)
+                        # If it's a date range, it's not an affiliation
+                        affiliation = "" 
+                    else:
+                        affiliation = p_text
                     break
         except NoSuchElementException:
             affiliation = ""
@@ -186,6 +212,7 @@ def extract_card_info(card) -> Dict[str, str]:
             "membership_type": membership_type,
             "deceased": deceased_status,
             "affiliation": affiliation,
+            "death_year": death_year,
         }
     except Exception as e:
         print(f"[{AID}] Error extracting card info: {e}")
@@ -211,6 +238,7 @@ def scrape_profile_details(link: str, base_info: Dict[str, str]) -> Dict[str, st
             "award": AWARD,
             "year": "",
             "affiliation": "",
+            "death_year": "",
             "profile_url": link,  # PRIMARY KEY
             **base_info  # Include info from card
         }
@@ -243,6 +271,12 @@ def scrape_profile_details(link: str, base_info: Dict[str, str]) -> Dict[str, st
                                 parts = value.split("-")
                                 if len(parts) > 1 and norm_text(parts[1]):
                                     member["deceased"] = "Y"
+                                    try:
+                                        d_match = re.search(r'\d{4}', parts[1])
+                                        if d_match:
+                                            member["death_year"] = d_match.group(0)
+                                    except Exception:
+                                        pass
                             else:
                                 # Write dynamic fields if they don't collide
                                 if key not in member:
@@ -319,6 +353,13 @@ def scrape_nas() -> pd.DataFrame:
     if len(all_cards_info) < 5000:
         print(f"[{AID}] WARNING: Only collected {len(all_cards_info)} profiles, expected around 7000.")
 
+    # Add standard metadata fields to all cards
+    for card_info in all_cards_info:
+        card_info.setdefault("id", AID)
+        card_info.setdefault("govid", GOVID)
+        card_info.setdefault("govname", GOVNAME)
+        card_info.setdefault("award", AWARD)
+
     # ----------------------------
     # Persist: timestamped snapshot + optional flat CSV
     # ----------------------------
@@ -327,7 +368,25 @@ def scrape_nas() -> pd.DataFrame:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     snap_path = snap_dir / f"{stamp}.csv"
     df = pd.DataFrame(all_cards_info, dtype=str).fillna("")
+    
+    # Reorder columns for consistency across scrapers
+    desired_order = [
+        "id", "govid", "govname", "award", 
+        "name", "profile_url", "year", 
+        "affiliation", "location", "membership_type", 
+        "deceased", "death_year"
+    ]
+    # Filter to only columns that actually exist
+    existing_cols = df.columns.tolist()
+    final_cols = [c for c in desired_order if c in existing_cols]
+    # Append any extra columns not in the desired list
+    remaining_cols = [c for c in existing_cols if c not in final_cols]
+    df = df[final_cols + remaining_cols]
+
     df.to_csv(snap_path, index=False)
+
+    # Save to secondary backup location (if configured)
+    save_backup_snapshot(snap_path, AID)
 
     # Also write your legacy flat CSV if `filepath` exists in runtime
     try:

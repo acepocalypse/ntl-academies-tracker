@@ -26,9 +26,9 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.
 def get_gmail_service():
     """Get authenticated Gmail API service and user email."""
     creds = None
-    current_dir = Path(__file__).resolve().parent if "__file__" in locals() else Path.cwd()
-    token_path = current_dir / "monitor\\token.json"
-    creds_path = current_dir / "monitor\\credentials.json"
+    current_dir = Path.cwd()
+    token_path = current_dir / "token.json"
+    creds_path = current_dir / "credentials.json"
     
     if token_path.exists():
         creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
@@ -70,13 +70,7 @@ def email_notify(
         List of file paths to attach to the email.
     """
     attachments = attachments or []
-    greeting = f"Hello {name}," if name else "Hello,"
-    closing = "Best regards,\nEDA Automated Bot"
-    attach_note = ""
-    if attachments:
-        attach_list = "\n".join(f"  - {os.path.basename(f)}" for f in attachments)
-        attach_note = f"\n\nAttached files:\n{attach_list}"
-    full_body = f"{greeting}\n\n{body}{attach_note}\n\n{closing}"
+    full_body = body
 
     try:
         service, user_email = get_gmail_service()
@@ -108,6 +102,7 @@ def email_notify(
         raw_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         message = {'raw': raw_msg}
         sent_msg = service.users().messages().send(userId="me", body=message).execute()
+        # Use ASCII-safe output to avoid Windows encoding issues
         print(f"[SUCCESS] Email sent to {', '.join(to_addrs)} (Message ID: {sent_msg['id']})")
     except HttpError as e:
         print(f"[ERROR] Failed to send email to {', '.join(to_addrs)}: {e}")

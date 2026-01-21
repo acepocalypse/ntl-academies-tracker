@@ -7,6 +7,9 @@ __pycache__/
 *.so
 
 cache/
+snapshots/
+
+
 
 credentials.json
 token.json

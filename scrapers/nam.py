@@ -15,6 +15,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
 
+# Import backup utility
+try:
+    from monitor.backup_utils import save_backup_snapshot
+except ImportError:
+    # Fallback if import fails
+    def save_backup_snapshot(*args, **kwargs):
+        return None
+
 # ----------------------------
 # Constants / Config
 # ----------------------------
@@ -76,6 +84,13 @@ def clean_name(name: str) -> str:
             name = name[: -len(s)]
     return norm_text(name)
 
+def clean_url(url: str) -> str:
+    """Remove query parameters and fragments to stabilize the primary key."""
+    if not url:
+        return ""
+    # Split on '?' to drop query strings, split on '#' to drop fragments
+    return url.split("?")[0].split("#")[0].strip()
+
 def first_href_in(card) -> str:
     """Best-effort: fetch a member profile URL from various possible anchors."""
     # Optimized: try most likely selector first with single call
@@ -83,8 +98,8 @@ def first_href_in(card) -> str:
         # Most common case first
         el = card.find_element(By.CSS_SELECTOR, "a.elementor-post__thumbnail__link")
         href = el.get_attribute("href") or ""
-        if href.strip():
-            return href.strip()
+        if clean_url(href):
+            return clean_url(href)
     except NoSuchElementException:
         pass
     
@@ -99,7 +114,7 @@ def first_href_in(card) -> str:
         try:
             el = card.find_element(By.CSS_SELECTOR, sel)
             href = el.get_attribute("href") or ""
-            href = href.strip()
+            href = clean_url(href)
             if href:
                 return href
         except NoSuchElementException:
@@ -217,11 +232,43 @@ def scrape_nam() -> pd.DataFrame:
                         # Profile URL (primary key)
                         profile_url = first_href_in(card)
 
-                        # Affiliation
+                        # Member Type (check for "Emeritus" or other types)
+                        member_type = ""
+                        try:
+                            # Look for member type labels (e.g., "Emeritus")
+                            type_elements = card.find_elements(By.CSS_SELECTOR, "div.sd-member-institutions span")
+                            for elem in type_elements:
+                                text = (elem.text or "").strip()
+                                if text.lower() in ["emeritus", "international", "foreign associate"]:
+                                    member_type = text
+                                    break
+                        except Exception:
+                            pass
+
+                        # Affiliation - get actual institution, skip member type labels
                         aff = ""
                         try:
-                            aff_el = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions span.sd-member-institutions")
-                            aff = aff_el.text or ""
+                            # Get all text content within the institutions div
+                            aff_container = card.find_element(By.CSS_SELECTOR, "div.sd-member-institutions")
+                            # Get all span elements
+                            aff_spans = aff_container.find_elements(By.CSS_SELECTOR, "span")
+                            
+                            for span in aff_spans:
+                                text = (span.text or "").strip()
+                                # Skip empty, skip member type labels, and skip "No Affiliation"
+                                if text and text.lower() not in ["emeritus", "international", "foreign associate", "no affiliation", ""]:
+                                    aff = text
+                                    break
+                            
+                            # Fallback: if no valid affiliation found in spans, try getting all text
+                            if not aff:
+                                full_text = (aff_container.text or "").strip()
+                                # Split by newlines and filter out member types and "No Affiliation"
+                                lines = [line.strip() for line in full_text.split("\n") if line.strip()]
+                                for line in lines:
+                                    if line.lower() not in ["emeritus", "international", "foreign associate", "no affiliation"]:
+                                        aff = line
+                                        break
                         except NoSuchElementException:
                             pass
 
@@ -242,11 +289,12 @@ def scrape_nam() -> pd.DataFrame:
                             "govid":          GOVID,
                             "govname":        GOVNAME,
                             "award":          AWARD,
+                            "name":           name or f"missing_name_{fallback_id}",
                             "profile_url":    norm_text(profile_url) or f"missing_url_{fallback_id}",
                             "year":           norm_text(year),
-                            "name":           name or f"missing_name_{fallback_id}",
                             "affiliation":    norm_text(aff),
                             "location":       norm_text(location),
+                            "member_type":    norm_text(member_type),
                             "deceased":       norm_text(deceased),
                         }
                         
@@ -397,6 +445,9 @@ def scrape_nam() -> pd.DataFrame:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     snap_path = snap_dir / f"{stamp}.csv"
     df.to_csv(snap_path, index=False)
+
+    # Save to secondary backup location (if configured)
+    save_backup_snapshot(snap_path, AID)
 
     # Also write your legacy flat CSV if `filepath` is provided by the caller's runtime
     legacy_target = globals().get("filepath")

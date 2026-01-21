@@ -18,6 +18,14 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 # If you use webdriver_manager, uncomment the next line and the call in new_driver()
 # from webdriver_manager.chrome import ChromeDriverManager
 
+# Import backup utility
+try:
+    from monitor.backup_utils import save_backup_snapshot
+except ImportError:
+    # Fallback if import fails
+    def save_backup_snapshot(*args, **kwargs):
+        return None
+
 AID        = "3008"
 AWARD      = "NAE Membership"
 GOVID      = "221"
@@ -87,6 +95,13 @@ def clean_name(name: str) -> str:
         if name.endswith(s):
             name = name[:-len(s)]
     return norm_text(name)
+
+def clean_url(url: str) -> str:
+    """Remove query parameters and fragments to stabilize the primary key."""
+    if not url:
+        return ""
+    # Split on '?' to drop query strings, split on '#' to drop fragments
+    return url.split("?")[0].split("#")[0].strip()
 
 def safe_attr(driver, by, selector, attr="text") -> str:
     try:
@@ -169,7 +184,7 @@ def _collect_links_from_current_listing(driver: webdriver.Chrome, wait: WebDrive
         for item in driver.find_elements(By.CLASS_NAME, "flexible-list-item"):
             try:
                 href = item.find_element(By.CSS_SELECTOR, "span.name a").get_attribute("href")
-                href = (href or "").strip()
+                href = clean_url(href)
                 if href and href not in seen:
                     seen.add(href)
                     links.append(href)
@@ -267,19 +282,50 @@ def scrape_profile(driver: webdriver.Chrome, wait: WebDriverWait, url: str, fall
     except NoSuchElementException:
         deceased = ""
 
+    # Extract death year if deceased
+    death_year = ""
+    if deceased:
+        try:
+            years_el = driver.find_element(By.CSS_SELECTOR, "span.years")
+            years_text = norm_text(years_el.text)
+            parts = years_text.split("-")
+            if len(parts) > 1:
+                death_year = parts[1].strip()
+        except NoSuchElementException:
+            pass
+
+    # Try to get detailed employment list to replace affiliation
+    try:
+        employment_items = driver.find_elements(By.XPATH, 
+            "//div[contains(@class, 'header-box') and contains(., 'Employment')]"
+            "/following-sibling::div[contains(@class, 'collapse')]"
+            "//ul/li"
+        )
+        if employment_items:
+            aff_list = []
+            for li in employment_items:
+                txt = norm_text(li.text)
+                if txt:
+                    aff_list.append(txt)
+            if aff_list:
+                affiliation = "; ".join(aff_list)
+    except Exception:
+        pass
+
     return {
         "id":                 AID,
         "govid":              GOVID,
         "govname":            GOVNAME,
         "award":              AWARD,
-        "profile_url":        url,          # PRIMARY KEY
         "name":               name,
-        "title":              norm_text(title),
-        "affiliation":        norm_text(affiliation),
-        "other_affiliations": norm_text(other_affs),
-        "location":           norm_text(location),
+        "profile_url":        url,          # PRIMARY KEY
         "year":               norm_text(election_year),
+        "affiliation":        norm_text(affiliation),
+        "location":           norm_text(location),
+        "title":              norm_text(title),
+        "other_affiliations": norm_text(other_affs),
         "deceased":           deceased,
+        "death_year":         death_year,
     }
 
 def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> pd.DataFrame:
@@ -369,6 +415,9 @@ def scrape_nae(all_years: Optional[List[int]] = None, headless: bool = True) -> 
     snap_path = snap_dir / f"{stamp}.csv"
     print(f"[{AID}] Saving snapshot to {snap_path}")
     df.to_csv(snap_path, index=False)
+
+    # Save to secondary backup location (if configured)
+    save_backup_snapshot(snap_path, AID)
 
     # Optional legacy CSV if your runner expects it
     try:

@@ -21,15 +21,20 @@ except Exception:  # pragma: no cover
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from monitor.diff_utils import (
-    load_latest_two,
-    compute_diff,
-    diff_summary_str,
-    write_diff_csvs,
-    SNAPSHOTS_DIR,
-)
-from monitor.notify import email_notify
-from monitor.removal_verifier import verify_removed_rows
+try:
+    from monitor.diff_utils import (
+        load_latest_two,
+        compute_diff,
+        diff_summary_str,
+        write_diff_csvs,
+        SNAPSHOTS_DIR,
+    )
+    from monitor.notify import email_notify
+    from monitor.removal_verifier import verify_removed_rows
+except ImportError as e:
+    print(f"FATAL: Failed to import required modules - {e}")
+    print("Please ensure all dependencies are installed: pip install -r requirements.txt")
+    sys.exit(1)
 
 # Ensure SNAPSHOTS_DIR is a Path object
 if isinstance(SNAPSHOTS_DIR, str):
@@ -150,7 +155,7 @@ def summarize_diff_paths(award_id: str, base_name: str) -> str:
     return "\n".join(files) if files else "(no diff files)"
 
 
-def validate_scraper_output(award_id: str, academy_name: str) -> tuple[bool, str]:
+def validate_scraper_output(award_id: str, academy_name: str, scraper_start_time: datetime, scraper_rc: int = None) -> tuple[bool, str]:
     """
     Validate that the scraper actually produced a CSV file.
     Returns (success, diagnostic_message)
@@ -173,21 +178,23 @@ def validate_scraper_output(award_id: str, academy_name: str) -> tuple[bool, str
     # Check the most recent file by modification time
     latest_file = max(csv_files, key=lambda p: p.stat().st_mtime)
     
-    # Check file age (should be recent)
-    file_age = datetime.now().timestamp() - latest_file.stat().st_mtime
+    # Check file age based on scraper success
+    file_mtime = datetime.fromtimestamp(latest_file.stat().st_mtime)
     file_size = latest_file.stat().st_size
     
-    logging.info("Latest CSV for %s (%s): %s (size: %d bytes, age: %.1f seconds)", 
-                award_id, academy_name, latest_file.name, file_size, file_age)
+    logging.info("Latest CSV for %s (%s): %s (size: %d bytes, modified: %s)", 
+                award_id, academy_name, latest_file.name, file_size, file_mtime)
     
-    # Set validation window for up to 24 hours to allow long-running scrapers
-    max_age_hours = 24
-    max_age_seconds = max_age_hours * 3600
+    # If scraper succeeded, require CSV to be newer than scraper start
+    if scraper_rc == 0:
+        # CSV must be created during this scraper run (within 1 hour tolerance for clock skew)
+        time_diff = (scraper_start_time - file_mtime).total_seconds()
+        if time_diff > 3600:  # More than 1 hour old
+            msg = f"Latest CSV for {award_id} was created before scraper run started: {file_mtime} < {scraper_start_time}"
+            logging.error(msg)
+            return False, msg
     
-    if file_age > max_age_seconds:
-        msg = f"Latest CSV for {award_id} is too old: {file_age:.1f} seconds ({file_age/3600:.1f} hours)"
-        logging.warning(msg)
-        return False, msg
+    # If scraper failed, we still proceed with the latest CSV available (no age check)
     
     if file_size == 0:
         msg = f"Latest CSV for {award_id} is empty: {latest_file}"
@@ -268,11 +275,12 @@ def main() -> None:
             continue
 
         # 1) Execute scraper
+        scraper_start_time = datetime.now()
         rc = run_scraper(module)
         print(f"Scraper {academy_name} ({aid}) finished with return code: {rc}")  # Add console output
         
         # 2) Validate scraper output regardless of return code
-        output_valid, validation_msg = validate_scraper_output(aid, academy_name)
+        output_valid, validation_msg = validate_scraper_output(aid, academy_name, scraper_start_time, rc)
         print(f"Validation for {academy_name} ({aid}): {validation_msg}")  # Add console output
         
         if rc != 0:
@@ -325,31 +333,28 @@ def main() -> None:
 
         diff = compute_diff(prev, curr, ignore_fields=ignore_fields)
 
+        # Verify removals but don't create extra staging files for email
         removed_verified, removed_still_present, removed_errors = verify_removed_rows(
             aid,
             diff.get("removed"),
         )
         diff["removed"] = removed_verified
 
+        # Build removal verification notes for logging only
         removal_notes: list[str] = []
         if not removed_still_present.empty:
-            removal_notes.append(f"{len(removed_still_present)} still live (removed_still_present)")
+            removal_notes.append(f"{len(removed_still_present)} still present")
         if not removed_errors.empty:
-            removal_notes.append(f"{len(removed_errors)} check errors (removed_check_errors)")
+            removal_notes.append(f"{len(removed_errors)} verification errors")
 
         summary = diff_summary_str(diff)
-        # 3) Write diff CSVs (if non-empty)
+        
+        # Write main diff CSVs to diffs directory
         diff_dir = SNAPSHOTS_DIR / "diffs"
         diff_dir.mkdir(parents=True, exist_ok=True)
 
-        # --- New: Use clean output file naming ---
-        # Extract timestamp from curr_path.name (assume format: YYYYMMDD_HHMMSS or similar)
-        # If not present, use current time
-        # Remove any extension from curr_path.name
+        # Use clean timestamp-based naming
         base_name = curr_path.stem
-        # Try to extract timestamp from curr_path.name, fallback to now
-        # If curr_path.name is like 20250910_140441.csv, base_name is 20250910_140441
-        # If not, fallback to datetime.now()
         try:
             datetime.strptime(base_name[:15], "%Y%m%d_%H%M%S")
             timestamp = base_name[:15]
@@ -358,47 +363,33 @@ def main() -> None:
         base_name = timestamp
 
         diff_prefix = diff_dir / f"{aid}__{base_name}"
-        diff_files = {
-            key: diff_dir / f"{aid}__{base_name}__{key}.csv"
-            for key in ("added", "removed", "modified")
-        }
+        written_diff_files = write_diff_csvs(diff, diff_prefix)
 
-        write_diff_csvs(diff, diff_prefix)
-
-        extra_diff_files: dict[str, Path] = {}
-        if not removed_still_present.empty:
-            extra_path = diff_dir / f"{aid}__{base_name}__removed_still_present.csv"
-            removed_still_present.to_csv(extra_path, index=False)
-            extra_diff_files["removed_still_present"] = extra_path
-
-        if not removed_errors.empty:
-            error_path = diff_dir / f"{aid}__{base_name}__removed_check_errors.csv"
-            removed_errors.to_csv(error_path, index=False)
-            extra_diff_files["removed_check_errors"] = error_path
-
-        written_str = summarize_diff_paths(aid, base_name)
-
-        for path in list(diff_files.values()) + list(extra_diff_files.values()):
+        # Only attach the main diff files (added/removed/modified) to email
+        for path in written_diff_files:
             if path.exists() and path.stat().st_size > 0:
-                path_str = str(path)
-                if path_str not in all_diff_files:
-                    all_diff_files.append(path_str)
+                all_diff_files.append(str(path))
 
-        msg = f"* {aid} ({academy_name}): {base_name} - {summary}"
+        # Build concise email message
+        msg = f"{academy_name}: {summary}"
         if removal_notes:
-            msg += "\nDouble-check: " + "; ".join(removal_notes)
-        if written_str != "(no diff files)":
-            msg += "\n" + written_str
-        logging.info(msg)
-        # Add a blank line before each award except the first
-        if len(lines) > 1:
-            lines.append("")
+            msg += f" ({'; '.join(removal_notes)})"
+        
+        logging.info(f"Award {aid} ({academy_name}): {base_name} - {summary}")
+        if removal_notes:
+            logging.info(f"  Removal verification: {'; '.join(removal_notes)}")
+        
         lines.append(msg)
 
     # 4) Notification summary
-    title = "National Academies Membership Tracker — Weekly run complete"
-    body = "\n".join(lines)
-    logging.info(body)
+    title = "National Academies Tracker - Updates"
+    body = "\n\n".join(lines)
+    
+    # Add summary footer
+    if all_diff_files:
+        body += f"\n\nAttached: {len(all_diff_files)} diff file(s)"
+    
+    logging.info("Email body:\n" + body)
     send_notification(settings, title, body, attachments=all_diff_files)
 
     # Also print to console for local runs
@@ -410,4 +401,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ImportError as e:
+        print(f"FATAL ERROR: Missing required package - {e}")
+        print("Please install all requirements: pip install -r requirements.txt")
+        logging.error(f"Import error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"FATAL ERROR: {e}")
+        logging.exception("Unhandled exception in main()")
+        sys.exit(1)
