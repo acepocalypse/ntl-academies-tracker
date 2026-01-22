@@ -293,6 +293,7 @@ def scrape_nam() -> pd.DataFrame:
                             "profile_url":    norm_text(profile_url) or f"missing_url_{fallback_id}",
                             "year":           norm_text(year),
                             "affiliation":    norm_text(aff),
+                            "member_type":    norm_text(member_type),
                             "location":       norm_text(location),
                             "member_type":    norm_text(member_type),
                             "deceased":       norm_text(deceased),

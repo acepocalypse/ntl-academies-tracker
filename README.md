@@ -20,6 +20,7 @@ NTL-Academies-Tracker/
 │
 ├─ monitor/
 │ ├─ __init__.py
+| ├─ backup_utils.py
 | ├─ diff_utils.py
 │ ├─ notify.py
 │ ├─ orchestrator.py
@@ -36,6 +37,16 @@ NTL-Academies-Tracker/
 │ └─ filler.py
 │
 ├─ snapshots/
+│ ├─ 1909/ 
+│ │ └─ timestamp.csv
+│ │
+│ ├─ 2023/
+│ │ └─ timestamp.csv
+│ │
+│ └─ 3008/
+│ └─ timestamp.csv
+│
+├─ backups/  (optional, configurable)
 │ ├─ 1909/ 
 │ │ └─ timestamp.csv
 │ │
@@ -80,6 +91,12 @@ Contains workflow management files including email alert automation and scrape r
 #### removal_verifier.py
 - Ensures accuracy of data extraction by re-running scrape process for individual profiles indicated by scripts to have been removed
 
+#### backup_utils.py
+- Provides utilities for saving snapshots to a secondary backup location
+- Reads backup configuration from `settings.toml`
+- Automatically copies snapshots to backup directory after primary save
+- Operates silently if backup is disabled or fails (won't interrupt main workflow)
+
 ### Scrapers  
 Contains all scrape scripts
 
@@ -97,6 +114,7 @@ Contains all scrape scripts
 
 ### Snapshots
 - Contains all CSV files of logged additions, removals, and modifications caught by diff_utils.py and scrape scripts
+- **Primary location** for snapshot storage and difference detection
 
 #### 1909
 - NAM CSV files
@@ -106,6 +124,13 @@ Contains all scrape scripts
 
 #### 3008
 - NAE CSV files
+
+### Backups
+- **Secondary backup location** for snapshots (configurable in `monitor/settings.toml`)
+- Used only for backup purposes, not for difference detection
+- Provides redundancy in case primary snapshots are corrupted or lost
+- To enable backups, set `backup_location` in `settings.toml` (default: "backups")
+- To disable backups, comment out or remove the `backup_location` setting
 
 ### .gitignore
 - Hides sensitive information
