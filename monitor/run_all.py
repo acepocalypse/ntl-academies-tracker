@@ -284,11 +284,15 @@ def main() -> None:
         print(f"Validation for {academy_name} ({aid}): {validation_msg}")  # Add console output
         
         if rc != 0:
-            msg = f"• {aid}: scraper FAILED (rc={rc}) - {validation_msg}"
-            logging.error(msg)
-            lines.append(msg)
-            any_failures = True
-            continue
+            # If scraper failed with rc=1 but output is valid, treat as warning
+            if rc == 1 and output_valid:
+                logging.warning(f"• {aid}: scraper warning (rc={rc}) but output is valid - {validation_msg}")
+            else:
+                msg = f"• {aid}: scraper FAILED (rc={rc}) - {validation_msg}"
+                logging.error(msg)
+                lines.append(msg)
+                any_failures = True
+                continue
         elif not output_valid:
             msg = f"• {aid}: scraper completed but output invalid - {validation_msg}"
             logging.error(msg)
